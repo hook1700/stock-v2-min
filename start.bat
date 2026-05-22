@@ -47,9 +47,7 @@ if not exist "frontend\node_modules" (
 
 echo.
 echo [启动] 正在启动后端服务 (端口: 8000)...
-cd backend
-start "StockStrategy-Backend" cmd /c "call venv\Scripts\activate.bat && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-cd ..
+start "StockStrategy-Backend" cmd /c "call backend\venv\Scripts\activate.bat && python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
 
 :: 等待后端启动
 timeout /t 3 /nobreak >nul
