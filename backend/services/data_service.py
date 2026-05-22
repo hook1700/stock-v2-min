@@ -7,6 +7,7 @@ from pathlib import Path
 from functools import wraps
 from typing import Optional
 
+import requests
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -14,6 +15,51 @@ import numpy as np
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 反爬绕过：全局给 requests 设置浏览器 UA + 通用 Referer
+# 解决云服务器机房 IP 被东方财富/新浪 403 / RemoteDisconnected 的问题
+# ============================================================
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+_original_request = requests.Session.request
+
+
+def _patched_request(self, method, url, **kwargs):
+    """给所有 requests 调用注入浏览器请求头并按域名补充 Referer。"""
+    headers = kwargs.get("headers") or {}
+    # 不覆盖调用方主动设置的 header
+    for k, v in _BROWSER_HEADERS.items():
+        headers.setdefault(k, v)
+
+    # 按目标域名补充 Referer（很多接口校验 Referer）
+    if "Referer" not in headers and "referer" not in headers:
+        if "eastmoney.com" in url:
+            headers["Referer"] = "https://quote.eastmoney.com/"
+        elif "sina.com.cn" in url or "sinajs.cn" in url:
+            headers["Referer"] = "https://finance.sina.com.cn/"
+        elif "xueqiu.com" in url:
+            headers["Referer"] = "https://xueqiu.com/"
+
+    kwargs["headers"] = headers
+    # 如果调用方没传 timeout，给一个默认值，避免悬挂
+    kwargs.setdefault("timeout", 15)
+    return _original_request(self, method, url, **kwargs)
+
+
+requests.Session.request = _patched_request
+logger.info("已对 requests.Session 注入浏览器请求头（用于绕过云服务器IP反爬）")
+
 
 
 def retry(max_retries: int = 3, base_delay: float = 1.0):
