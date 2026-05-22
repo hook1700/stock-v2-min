@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     MIN_MARKET_CAP: float = 5e8       # 最低市值5亿
     MIN_TURNOVER: float = 0.5         # 最低换手率0.5%
 
+    # 股票池过滤关键词（名称包含这些关键词的股票将被排除）
+    STOCK_POOL_EXCLUDE: list = ["ST", "*ST", "退市", "退"]
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

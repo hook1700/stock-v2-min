@@ -50,6 +50,25 @@ class StrategyRunner:
         # 执行4个策略
         logger.info("开始执行选股策略...")
         stock_pool = self.data_service.get_stock_pool()
+        if not stock_pool:
+            error_msg = "获取股票池失败（返回为空），中止本次执行"
+            logger.error(error_msg)
+            duration = time.time() - start_time
+            self.rec_service.save_scheduler_log(
+                run_date=today,
+                status="FAILED",
+                strategies_completed=0,
+                sector_completed=False,
+                error_message=error_msg,
+                duration_seconds=duration,
+            )
+            return {
+                "success": False,
+                "message": error_msg,
+                "strategies_completed": 0,
+                "sector_completed": False,
+                "duration": duration,
+            }
         logger.info(f"股票池大小: {len(stock_pool)}")
 
         for strategy in self.strategies:
@@ -136,6 +155,14 @@ class StrategyRunner:
 
         try:
             stock_pool = self.data_service.get_stock_pool()
+            if not stock_pool:
+                return {
+                    "success": False,
+                    "message": "获取股票池失败（返回为空）",
+                    "strategies_completed": 0,
+                    "sector_completed": False,
+                    "duration": time.time() - start_time,
+                }
             picks = target_strategy.get_top_picks(stock_pool, today, top_n=3)
 
             if picks:
