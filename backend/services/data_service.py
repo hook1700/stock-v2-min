@@ -7,6 +7,7 @@ from pathlib import Path
 from functools import wraps
 from typing import Optional
 
+import re
 import baostock as bs
 import pandas as pd
 import numpy as np
@@ -159,8 +160,8 @@ class DataService:
         # 只保留 A 股（type=1 股票，status=1 上市）
         df = df[(df["type"] == "1") & (df["status"] == "1")]
 
-        # 排除ST、*ST、退市股票
-        exclude_pattern = "|".join(settings.STOCK_POOL_EXCLUDE)
+        # 排除ST、*ST、退市股票（需转义正则特殊字符）
+        exclude_pattern = "|".join(re.escape(x) for x in settings.STOCK_POOL_EXCLUDE)
         df = df[~df["code_name"].str.contains(exclude_pattern, na=False)]
 
         # 转为纯数字代码
