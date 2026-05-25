@@ -88,7 +88,7 @@ class DividendRotationStrategy(BaseStrategy):
             return None
 
         # 条件3: 财务健康检查（使用可用的指标）
-        # 由于AKShare免费接口限制，简化财务健康判断
+        # 由于BaoStock接口限制，简化财务健康判断
         market_cap = fund.get("market_cap", 0)
         if market_cap < settings.MIN_MARKET_CAP * 4:  # 高股息股通常大市值
             return None

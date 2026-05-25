@@ -53,12 +53,12 @@ async def run_all_strategies():
 
 @router.get("/datasource-check")
 async def datasource_check():
-    """数据源连通性诊断 - 用于定位 AKShare 接口拉不到数据的根因。
+    """数据源连通性诊断 - 检测 BaoStock 接口是否可用。
 
-    返回各数据源的连通状态、耗时、错误信息，以及当前服务器公网 IP 的地理位置。
+    返回 BaoStock 的连通状态、耗时、错误信息，以及当前服务器公网 IP 的地理位置。
     """
     import requests
-    import akshare as ak
+    import baostock as bs
 
     result = {"checks": [], "server_ip_info": None}
 
@@ -69,34 +69,46 @@ async def datasource_check():
     except Exception as e:
         result["server_ip_info"] = {"error": str(e)}
 
-    # 2. 测试东方财富实时行情（AKShare get_stock_pool 的真实源）
-    def _check_em():
-        url = (
-            "https://82.push2.eastmoney.com/api/qt/clist/get"
-            "?pn=1&pz=20&po=1&np=1&fltt=2&invt=2"
-            "&fs=m:1+t:2,m:1+t:23,m:0+t:6,m:0+t:80&fields=f12,f14"
+    # 2. 测试 BaoStock 登录
+    def _check_bs_login():
+        lg = bs.login()
+        if lg.error_code == '0':
+            bs.logout()
+            return 200, 1
+        return 500, 0
+
+    # 3. 测试 BaoStock 获取交易日历
+    def _check_bs_trade_dates():
+        lg = bs.login()
+        if lg.error_code != '0':
+            return 500, 0
+        rs = bs.query_trade_dates(start_date="2024-01-01", end_date="2024-01-31")
+        count = 0
+        while (rs.error_code == '0') and rs.next():
+            count += 1
+        bs.logout()
+        return 200, count
+
+    # 4. 测试 BaoStock K 线数据
+    def _check_bs_kline():
+        lg = bs.login()
+        if lg.error_code != '0':
+            return 500, 0
+        rs = bs.query_history_k_data_plus(
+            "sh.600519", "date,close",
+            start_date="2024-01-01", end_date="2024-01-10",
+            frequency="d", adjustflag="2"
         )
-        r = requests.get(url, timeout=8, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        return r.status_code, len(r.text)
-
-    # 3. 测试新浪财经接口（AKShare 部分接口的源）
-    def _check_sina():
-        r = requests.get("https://hq.sinajs.cn/list=sh600519", timeout=8, headers={
-            "Referer": "https://finance.sina.com.cn"
-        })
-        return r.status_code, len(r.text)
-
-    # 4. 直接调用 AKShare 看是否能拿到数据
-    def _check_akshare():
-        df = ak.stock_zh_a_spot_em()
-        return 200, (0 if df is None else len(df))
+        count = 0
+        while (rs.error_code == '0') and rs.next():
+            count += 1
+        bs.logout()
+        return 200, count
 
     for name, func in [
-        ("eastmoney_clist", _check_em),
-        ("sina_hq", _check_sina),
-        ("akshare_stock_zh_a_spot_em", _check_akshare),
+        ("baostock_login", _check_bs_login),
+        ("baostock_trade_dates", _check_bs_trade_dates),
+        ("baostock_kline", _check_bs_kline),
     ]:
         item = {"name": name, "ok": False}
         t0 = time.time()

@@ -1,7 +1,8 @@
 """
 本地拉数据 + 同步到云服务器
 ============================
-在本地家用宽带机器上运行（绕过云服务器机房 IP 被反爬封禁的问题）。
+在本地家用宽带机器上运行。
+BaoStock 无反爬限制，可直接在云服务器运行，但保留本地拉取+同步的方式做备选。
 
 使用方式：
     cd E:\\myproject\\stock-v2-min
@@ -26,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-import akshare as ak
+import baostock as bs
 import pandas as pd
 
 logging.basicConfig(
@@ -63,28 +64,67 @@ def save_cache(key: str, data, d: date = None):
     logger.info(f"  → 缓存写入 {path.name}")
 
 
+def _code_to_bs(code: str) -> str:
+    """将纯数字股票代码转换为 BaoStock 格式"""
+    if code.startswith(("sh.", "sz.")):
+        return code
+    if code.startswith(("6", "9")):
+        return f"sh.{code}"
+    else:
+        return f"sz.{code}"
+
+
+def _code_from_bs(bs_code: str) -> str:
+    """将 BaoStock 格式代码转换为纯数字代码"""
+    if "." in bs_code:
+        return bs_code.split(".")[1]
+    return bs_code
+
+
 # ============== 数据采集 ==============
 STOCK_POOL_EXCLUDE = ["ST", "*ST", "退市", "退"]
 MIN_MARKET_CAP = 5e8
 
 
-def fetch_stock_spot() -> pd.DataFrame:
-    logger.info("[1/4] 拉取实时行情 stock_zh_a_spot_em ...")
-    df = ak.stock_zh_a_spot_em()
-    logger.info(f"  共 {len(df)} 行")
-    save_cache("stock_spot", df)
+def fetch_stock_list() -> pd.DataFrame:
+    """获取全部A股基本信息"""
+    logger.info("[1/4] 获取A股股票列表 ...")
+    rs = bs.query_stock_basic(code_name="", code="")
+    stock_list = []
+    while (rs.error_code == '0') and rs.next():
+        stock_list.append(rs.get_row_data())
+
+    df = pd.DataFrame(stock_list, columns=rs.fields)
+    # 只保留A股上市状态
+    df = df[(df["type"] == "1") & (df["status"] == "1")]
+    logger.info(f"  共 {len(df)} 只A股")
     return df
 
 
-def fetch_stock_pool(spot_df: pd.DataFrame) -> list:
+def fetch_stock_pool(df_basic: pd.DataFrame) -> list:
+    """生成股票池（排除ST/退市）"""
     logger.info("[2/4] 生成股票池 ...")
     pattern = "|".join(STOCK_POOL_EXCLUDE)
-    df = spot_df[~spot_df["名称"].str.contains(pattern, na=False)]
-    if "总市值" in df.columns:
-        df = df[df["总市值"] >= MIN_MARKET_CAP]
-    codes = df["代码"].tolist()
+    df = df_basic[~df_basic["code_name"].str.contains(pattern, na=False)]
+    codes = [_code_from_bs(c) for c in df["code"].tolist()]
     logger.info(f"  股票池 {len(codes)} 只")
     save_cache("stock_pool", codes)
+
+    # 同时生成一个基础的 spot DataFrame（包含代码和名称）
+    spot_rows = []
+    for _, row in df.iterrows():
+        spot_rows.append({
+            "代码": _code_from_bs(row["code"]),
+            "名称": row.get("code_name", ""),
+            "最新价": 0,
+            "总市值": 0,
+            "市盈率-动态": 0,
+            "市净率": 0,
+            "换手率": 0,
+        })
+    spot_df = pd.DataFrame(spot_rows)
+    save_cache("stock_spot", spot_df)
+
     return codes
 
 
@@ -93,29 +133,41 @@ def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
         codes = codes[:top_n]
     total = len(codes)
     logger.info(f"[3/4] 拉取 K 线 (前 {total} 只, 每只 {days} 天) ...")
-    end_date = date.today().strftime("%Y%m%d")
-    start_date = (date.today() - timedelta(days=int(days * 1.5))).strftime("%Y%m%d")
+    end_date = date.today().strftime("%Y-%m-%d")
+    start_date = (date.today() - timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
 
     ok, fail = 0, 0
     for i, code in enumerate(codes, 1):
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
+            bs_code = _code_to_bs(code)
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount,turn,pctChg",
                 start_date=start_date,
                 end_date=end_date,
-                adjust="qfq",
+                frequency="d",
+                adjustflag="2",  # 前复权
             )
-            if df is None or df.empty:
+            data_list = []
+            while (rs.error_code == '0') and rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
                 fail += 1
                 continue
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "收盘": "close",
-                "最高": "high", "最低": "low", "成交量": "volume",
-                "成交额": "amount", "换手率": "turnover",
-                "涨跌幅": "change_pct", "振幅": "amplitude",
-            })
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
             df["date"] = pd.to_datetime(df["date"])
+            for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df = df.rename(columns={
+                "turn": "turnover",
+                "pctChg": "change_pct",
+            })
+
+            # 过滤停牌日
+            df = df[df["volume"] > 0]
             df = df.sort_values("date").reset_index(drop=True).tail(days).reset_index(drop=True)
             save_cache(f"kline_{code}_{days}", df)
             ok += 1
@@ -130,14 +182,46 @@ def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
 
 
 def fetch_sectors():
-    logger.info("[4/4] 拉取申万行业数据 ...")
+    """获取行业分类信息"""
+    logger.info("[4/4] 获取行业分类数据 ...")
     try:
-        df = ak.sw_index_spot()
-        if df is not None and not df.empty:
+        # BaoStock 通过 query_stock_industry 获取行业信息
+        # 这里抽样前200只股票获取行业分布
+        stock_pool_path = cache_path("stock_pool")
+        if stock_pool_path.exists():
+            with open(stock_pool_path, "rb") as f:
+                codes = pickle.load(f)
+        else:
+            codes = []
+
+        sample_codes = codes[:200]
+        industry_map = {}
+
+        for code in sample_codes:
+            bs_code = _code_to_bs(code)
+            rs_ind = bs.query_stock_industry(code=bs_code)
+            while (rs_ind.error_code == '0') and rs_ind.next():
+                row = rs_ind.get_row_data()
+                ind_name = row[3] if len(row) > 3 else ""
+                ind_code = row[2] if len(row) > 2 else ""
+                if ind_name and ind_name not in industry_map:
+                    industry_map[ind_name] = {
+                        "板块代码": ind_code or ind_name,
+                        "板块名称": ind_name,
+                        "stock_count": 0,
+                    }
+                if ind_name:
+                    industry_map[ind_name]["stock_count"] = \
+                        industry_map.get(ind_name, {}).get("stock_count", 0) + 1
+
+        if industry_map:
+            df = pd.DataFrame(list(industry_map.values()))
             save_cache("shenwan_sectors", df)
-            logger.info(f"  申万板块 {len(df)} 个")
+            logger.info(f"  行业板块 {len(df)} 个")
+        else:
+            logger.warning("  未获取到行业数据")
     except Exception as e:
-        logger.warning(f"  申万拉取失败: {e}")
+        logger.warning(f"  行业数据拉取失败: {e}")
 
 
 # ============== 同步到服务器 ==============
@@ -149,8 +233,6 @@ def sync_to_remote():
 
     logger.info(f"同步缓存到 {user}@{host}:{remote}/backend/data/cache/")
 
-    # 优先用 scp（Windows 自带），简单可靠
-    src = str(CACHE_DIR) + "/*.pkl"
     cmd_scp = (
         f'scp -i "{key}" -o StrictHostKeyChecking=no '
         f'{CACHE_DIR}\\*.pkl '
@@ -167,13 +249,24 @@ def sync_to_remote():
 
 def main():
     logger.info("=" * 50)
-    logger.info(f"开始拉取 ({date.today()})")
+    logger.info(f"开始拉取 ({date.today()}) - 数据源: BaoStock")
     logger.info("=" * 50)
 
-    spot_df = fetch_stock_spot()
-    codes = fetch_stock_pool(spot_df)
-    fetch_klines(codes, days=CONFIG["kline_days"], top_n=CONFIG["top_n_kline"])
-    fetch_sectors()
+    # 登录 BaoStock
+    lg = bs.login()
+    if lg.error_code != '0':
+        logger.error(f"BaoStock 登录失败: {lg.error_msg}")
+        sys.exit(1)
+    logger.info("BaoStock 登录成功")
+
+    try:
+        df_basic = fetch_stock_list()
+        codes = fetch_stock_pool(df_basic)
+        fetch_klines(codes, days=CONFIG["kline_days"], top_n=CONFIG["top_n_kline"])
+        fetch_sectors()
+    finally:
+        bs.logout()
+        logger.info("BaoStock 已登出")
 
     logger.info("-" * 50)
     sync_to_remote()
