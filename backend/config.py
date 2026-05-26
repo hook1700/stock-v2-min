@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     CACHE_DIR: Path = Path(__file__).parent / "data" / "cache"
 
     # 定时任务配置
-    DAILY_RUN_HOUR: int = 15
+    DAILY_RUN_HOUR: int = 21
     DAILY_RUN_MINUTE: int = 30
     TIMEZONE: str = "Asia/Shanghai"
 
