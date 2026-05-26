@@ -227,21 +227,28 @@ class CupAndHandleStrategy(BaseStrategy):
 
     def _is_breakout(self, df: pd.DataFrame, handle: dict) -> bool:
         """
-        检测最新一天是否放量突破柄部高点
+        检测最近3天是否有放量突破柄部高点
         条件：收盘价>柄部高点，量比>1.5
         """
-        latest = df.iloc[-1]
+        # 检查最近3天是否有突破
+        for offset in range(min(3, len(df))):
+            idx = -1 - offset
+            row = df.iloc[idx]
 
-        # 收盘价突破柄部高点
-        if latest["close"] <= handle["high"]:
-            return False
+            # 收盘价突破柄部高点
+            if row["close"] <= handle["high"]:
+                continue
 
-        # 量比检查
-        volume_ratio = compute_volume_ratio(df["volume"], period=5)
-        if volume_ratio.iloc[-1] < settings.VOLUME_RATIO_THRESHOLD:
-            return False
+            # 量比检查
+            vol_start = max(0, len(df) + idx - 5)
+            vol_end = len(df) + idx
+            if vol_end <= vol_start:
+                continue
+            avg_vol = df["volume"].iloc[vol_start:vol_end].mean()
+            if avg_vol > 0 and row["volume"] / avg_vol >= settings.VOLUME_RATIO_THRESHOLD:
+                return True
 
-        return True
+        return False
 
     def _build_signal(self, code: str, df: pd.DataFrame, cup: dict, handle: dict) -> TradeSignal:
         """构建交易信号"""

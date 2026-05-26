@@ -28,9 +28,9 @@ class Settings(BaseSettings):
 
     # 策略2: 均线回踩参数
     MA_PERIODS: list = [5, 10, 20, 60]
-    MA_PULLBACK_TOLERANCE: float = 0.01  # 回踩均线的容差（±1%）
+    MA_PULLBACK_TOLERANCE: float = 0.02  # 回踩均线的容差（±2%）
     MA_ALIGNMENT_DAYS: int = 5      # 多头排列至少持续天数
-    VOLUME_SHRINK_RATIO: float = 0.6  # 缩量标准（低于前5日均量60%）
+    VOLUME_SHRINK_RATIO: float = 0.7  # 缩量标准（低于前5日均量70%）
 
     # 策略3: 底部放量参数
     BOTTOM_DECLINE_MONTHS: int = 3   # 前期下跌至少3个月
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     BREAKOUT_VOLUME_RATIO: float = 2.0  # 突破日成交量倍数
     PULLBACK_DAYS_MIN: int = 3       # 回调最少天数
     PULLBACK_DAYS_MAX: int = 8       # 回调最多天数
-    STABILIZE_AMPLITUDE: float = 0.03  # 企稳日振幅小于3%
+    STABILIZE_AMPLITUDE: float = 0.05  # 企稳日振幅小于5%
 
     # 策略4: 高股息参数
     DIVIDEND_YIELD_MIN: float = 0.04  # 最低股息率4%

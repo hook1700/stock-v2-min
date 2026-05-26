@@ -213,25 +213,25 @@ class DataService:
         else:
             latest_trade_date = trade_dates[-1]
 
-        # 使用 query_all_stock 获取当日所有股票行情概览
+        # 构建 spot DataFrame，通过 query_all_stock 获取可交易股票列表
         rs_all = bs.query_all_stock(day=latest_trade_date)
-        all_stocks = []
+        tradable_codes = set()
         while (rs_all.error_code == '0') and rs_all.next():
-            all_stocks.append(rs_all.get_row_data())
+            row_data = rs_all.get_row_data()
+            if len(row_data) >= 2 and row_data[1] == '1':  # tradeStatus=1 正常交易
+                tradable_codes.add(row_data[0])
 
-        if all_stocks:
-            df_all = pd.DataFrame(all_stocks, columns=rs_all.fields)
-            # 只保留 A 股
-            df_all = df_all[df_all["code"].str.match(r"^(sh\.6|sz\.0|sz\.3)")]
-        else:
-            df_all = pd.DataFrame()
-
-        # 构建兼容的 spot DataFrame
+        # 构建结果
         result_rows = []
         for _, row in df_basic.iterrows():
             bs_code = row["code"]
             pure_code = _code_from_bs(bs_code)
             name = row.get("code_name", "")
+
+            # 跳过非A股代码
+            if not (bs_code.startswith("sh.6") or bs_code.startswith("sz.0") or bs_code.startswith("sz.3")):
+                continue
+
             r = {
                 "代码": pure_code,
                 "名称": name,
@@ -241,16 +241,11 @@ class DataService:
                 "市净率": 0,
                 "换手率": 0,
             }
-            # 如果有行情数据，合并 tradeStatus
-            if not df_all.empty:
-                match = df_all[df_all["code"] == bs_code]
-                if not match.empty:
-                    trade_row = match.iloc[0]
-                    r["最新价"] = float(trade_row.get("close", 0) or 0)
             result_rows.append(r)
 
         spot_df = pd.DataFrame(result_rows)
         self._save_cache("stock_spot", spot_df)
+        logger.info(f"行情数据构建完成，共{len(spot_df)}只股票")
         return spot_df
 
     @retry(max_retries=3)
@@ -356,7 +351,13 @@ class DataService:
                 if not stock_row.empty:
                     row = stock_row.iloc[0]
                     name = row.get("名称", "")
-                    current_price = row.get("最新价", 0)
+                    current_price = float(row.get("最新价", 0) or 0)
+
+            # 如果 spot 中没有价格，从 K 线取最新收盘价
+            if current_price == 0:
+                kline = self.get_daily_kline(code, days=5)
+                if kline is not None and not kline.empty:
+                    current_price = float(kline.iloc[-1]["close"])
 
             result = {
                 "code": code,
@@ -371,33 +372,50 @@ class DataService:
                 "profit_growth_3y": 0,
             }
 
-            # 通过 BaoStock 获取季频盈利能力数据
+            # 通过 BaoStock query_dupont_data 获取 ROE 等杜邦分析数据
             year = date.today().year
             quarter = (date.today().month - 1) // 3
             if quarter == 0:
                 year -= 1
                 quarter = 4
 
-            # 尝试获取最近几个季度的数据
-            for q_offset in range(4):
+            # 尝试获取最近几个季度的盈利数据（含PE/PB近似计算）
+            for q_offset in range(6):
                 q = quarter - q_offset
                 y = year
                 while q <= 0:
                     q += 4
                     y -= 1
+
                 rs_profit = bs.query_profit_data(code=bs_code, year=y, quarter=q)
                 profit_list = []
                 while (rs_profit.error_code == '0') and rs_profit.next():
                     profit_list.append(rs_profit.get_row_data())
+
                 if profit_list:
                     df_profit = pd.DataFrame(profit_list, columns=rs_profit.fields)
                     if not df_profit.empty:
-                        latest = df_profit.iloc[-1]
-                        result["debt_ratio"] = float(latest.get("liabilityToAsset", 0) or 0) / 100.0
+                        latest_p = df_profit.iloc[-1]
+                        result["debt_ratio"] = float(latest_p.get("liabilityToAsset", 0) or 0) / 100.0
+
+                        # 通过每股收益计算PE
+                        eps = float(latest_p.get("epsTTM", 0) or 0)
+                        if eps > 0 and current_price > 0:
+                            # 如果是季度数据，年化
+                            result["pe"] = current_price / eps
+
+                        # 通过每股净资产计算PB
+                        bps = float(latest_p.get("netAssetPerShare", 0) or 0)
+                        if bps > 0 and current_price > 0:
+                            result["pb"] = current_price / bps
+
+                        # 估算总市值（通过总股本）
+                        total_share = float(latest_p.get("liqAShareTotal", 0) or 0)
+                        if total_share > 0 and current_price > 0:
+                            result["market_cap"] = current_price * total_share * 10000  # 单位：元
                     break
 
-            # 获取估值数据（PE/PB）通过 query_dupont_data 或直接用 K 线计算
-            # BaoStock 提供 query_stock_industry 获取行业
+            # 获取行业
             rs_ind = bs.query_stock_industry(code=bs_code)
             ind_list = []
             while (rs_ind.error_code == '0') and rs_ind.next():
@@ -407,16 +425,40 @@ class DataService:
                 if not df_ind.empty:
                     result["industry"] = df_ind.iloc[-1].get("industry", "")
 
-            # 获取股息率数据通过 query_dividend_data
-            rs_div = bs.query_dividend_data(code=bs_code, year=str(year), yearType="report")
-            div_list = []
-            while (rs_div.error_code == '0') and rs_div.next():
-                div_list.append(rs_div.get_row_data())
-            if div_list and current_price > 0:
-                df_div = pd.DataFrame(div_list, columns=rs_div.fields)
-                # 计算年度股息率
-                total_dividend = df_div["perStockDiv"].astype(float).sum()
-                result["dividend_yield"] = total_dividend / current_price if current_price > 0 else 0
+            # 获取股息率数据
+            try:
+                rs_div = bs.query_dividend_data(code=bs_code, year=str(year), yearType="report")
+                div_list = []
+                while (rs_div.error_code == '0') and rs_div.next():
+                    div_list.append(rs_div.get_row_data())
+                if div_list and current_price > 0:
+                    df_div = pd.DataFrame(div_list, columns=rs_div.fields)
+                    total_dividend = pd.to_numeric(df_div["perStockDiv"], errors="coerce").sum()
+                    result["dividend_yield"] = total_dividend / current_price if current_price > 0 else 0
+            except Exception:
+                pass
+
+            # 若仍无PE，尝试上一年度
+            if result["pe"] == 0:
+                try:
+                    for q_offset in range(4):
+                        q = 4 - q_offset
+                        rs_p2 = bs.query_profit_data(code=bs_code, year=year - 1, quarter=q)
+                        p2_list = []
+                        while (rs_p2.error_code == '0') and rs_p2.next():
+                            p2_list.append(rs_p2.get_row_data())
+                        if p2_list:
+                            df_p2 = pd.DataFrame(p2_list, columns=rs_p2.fields)
+                            if not df_p2.empty:
+                                eps2 = float(df_p2.iloc[-1].get("epsTTM", 0) or 0)
+                                if eps2 > 0 and current_price > 0:
+                                    result["pe"] = current_price / eps2
+                                bps2 = float(df_p2.iloc[-1].get("netAssetPerShare", 0) or 0)
+                                if bps2 > 0 and current_price > 0 and result["pb"] == 0:
+                                    result["pb"] = current_price / bps2
+                            break
+                except Exception:
+                    pass
 
             self._save_cache(cache_key, result)
             return result

@@ -98,17 +98,24 @@ def is_bullish_ma_alignment(df: pd.DataFrame, ma_cols: list) -> bool:
 
 
 def is_ma_trending_up(df: pd.DataFrame, ma_col: str, lookback: int = 5) -> bool:
-    """判断均线是否持续向上"""
+    """判断均线是否整体趋势向上（允许个别天走平或微降）"""
     if len(df) < lookback + 1 or ma_col not in df.columns:
         return False
 
     ma_values = df[ma_col].tail(lookback + 1).values
-    # 检查每天的MA是否大于前一天
-    for i in range(1, len(ma_values)):
-        if pd.isna(ma_values[i]) or pd.isna(ma_values[i - 1]):
-            return False
-        if ma_values[i] <= ma_values[i - 1]:
-            return False
+    # 只要求整体方向向上：末尾值 > 起始值，且中间不低于起始值太多
+    if pd.isna(ma_values[0]) or pd.isna(ma_values[-1]):
+        return False
+
+    # 整体上升：最后一天的MA > 第一天的MA
+    if ma_values[-1] <= ma_values[0]:
+        return False
+
+    # 中间允许微幅回落，但不能低于起始值的 99.5%
+    min_val = np.nanmin(ma_values)
+    if min_val < ma_values[0] * 0.995:
+        return False
+
     return True
 
 

@@ -212,9 +212,8 @@ class VolumeBreakoutStrategy(BaseStrategy):
         """
         检测企稳信号
         条件：
-        1. 价格在关键支撑位附近（首板实体中点、开盘价、10/20日均线）
-        2. 振幅收窄（<3%）
-        3. 收出小阴小阳十字星
+        1. 振幅收窄（<5%）
+        2. K线实体较小（实体占比<0.6）
         """
         latest = df.iloc[-1]
 
@@ -225,11 +224,11 @@ class VolumeBreakoutStrategy(BaseStrategy):
         if amplitude > settings.STABILIZE_AMPLITUDE:
             return False
 
-        # K线实体小（十字星特征）
+        # K线实体不能太大（允许小阴小阳，不要求严格十字星）
         body = abs(latest["close"] - latest["open"])
         total_range = latest["high"] - latest["low"]
-        if total_range > 0 and body / total_range > 0.5:
-            return False  # 实体太大，不是十字星
+        if total_range > 0 and body / total_range > 0.6:
+            return False
 
         return True
 

@@ -34,19 +34,11 @@ class DividendRotationStrategy(BaseStrategy):
         signals = []
         total = len(stock_pool)
 
-        # 先获取全部行情数据做初筛
-        spot_df = self.data_service.get_stock_spot()
-        if spot_df is None:
-            logger.error("[高股息] 无法获取行情数据")
-            return []
+        # BaoStock 不提供实时市值，跳过市值初筛，直接用股票池
+        # 从股票池中抽样扫描（高股息策略通常大盘股，取前300只代码较小的）
+        candidates = sorted(stock_pool)[:300]
 
-        # 初步筛选：排除市值过小和换手率过低的
-        candidates = spot_df[
-            (spot_df["总市值"] >= settings.MIN_MARKET_CAP * 2) &  # 高股息股通常市值较大
-            (spot_df["代码"].isin(stock_pool))
-        ]["代码"].tolist()
-
-        logger.info(f"[高股息] 初筛后{len(candidates)}只候选股")
+        logger.info(f"[高股息] 候选股{len(candidates)}只")
 
         for i, code in enumerate(candidates):
             if i % 50 == 0:
@@ -90,7 +82,7 @@ class DividendRotationStrategy(BaseStrategy):
         # 条件3: 财务健康检查（使用可用的指标）
         # 由于BaoStock接口限制，简化财务健康判断
         market_cap = fund.get("market_cap", 0)
-        if market_cap < settings.MIN_MARKET_CAP * 4:  # 高股息股通常大市值
+        if market_cap > 0 and market_cap < settings.MIN_MARKET_CAP * 4:  # 高股息股通常大市值
             return None
 
         # 构建信号
