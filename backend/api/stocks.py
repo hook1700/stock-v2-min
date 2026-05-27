@@ -59,71 +59,51 @@ async def get_stock_list(
     - 示例: sort_by=-change_pct (涨跌幅降序)
     - 示例: sort_by=-change_pct,volume (先按涨跌幅降序，再按成交量升序)
     """
-    # 获取股票池
-    stock_pool = data_service.get_stock_pool()
-    if not stock_pool:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size, "scan_date": None}
-
-    # 获取spot数据（包含名称）
-    spot_df = data_service.get_stock_spot()
-
-    # 构建股票列表
-    results = []
-    for code in stock_pool:
-        name = ""
-        if spot_df is not None and not spot_df.empty:
-            match = spot_df[spot_df["代码"] == code]
-            if not match.empty:
-                name = match.iloc[0]["名称"]
-        results.append({"code": code, "name": name})
-
-    # 关键词过滤（代码或名称模糊匹配）
-    if keyword:
-        keyword_lower = keyword.lower()
-        results = [
-            r for r in results
-            if keyword_lower in r["code"].lower() or keyword_lower in r["name"].lower()
-        ]
-
     # 默认使用最新交易日作为日期过滤条件
     if scan_date:
         try:
-            target_date = date.fromisoformat(scan_date)
+            date.fromisoformat(scan_date)
         except ValueError:
             raise HTTPException(status_code=400, detail="日期格式错误，应为YYYY-MM-DD")
         actual_scan_date = scan_date
     else:
         actual_scan_date = _get_latest_trade_date()
-        target_date = date.fromisoformat(actual_scan_date)
 
-    # 为所有过滤后的股票补充价格数据（排序前需要完整数据）
+    # 批量获取该日全市场行情（带缓存，首次慢，后续秒返回）
+    daily_df = data_service.get_all_stocks_daily(actual_scan_date)
+    if daily_df is None or daily_df.empty:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "scan_date": actual_scan_date}
+
+    # 获取spot数据（包含名称）用于名称匹配
+    spot_df = data_service.get_stock_spot()
+
+    # 构建名称映射
+    name_map = {}
+    if spot_df is not None and not spot_df.empty:
+        name_map = dict(zip(spot_df["代码"], spot_df["名称"]))
+
+    # 构建结果列表
     items = []
-    for r in results:
-        item = {
-            "stock_code": r["code"],
-            "stock_name": r["name"],
-            "latest_price": None,
-            "change_pct": None,
-            "volume": None,
-            "turnover": None,
-            "data_date": None,
-        }
+    for _, row in daily_df.iterrows():
+        code = row["code"]
+        name = name_map.get(code, "")
+        items.append({
+            "stock_code": code,
+            "stock_name": name,
+            "latest_price": round(float(row["close"]), 2) if row["close"] == row["close"] else None,
+            "change_pct": round(float(row["change_pct"]), 2) if row["change_pct"] == row["change_pct"] else None,
+            "volume": int(row["volume"]) if row["volume"] == row["volume"] else None,
+            "turnover": round(float(row["turnover"]), 2) if row["turnover"] == row["turnover"] else None,
+            "data_date": actual_scan_date,
+        })
 
-        kline = data_service.get_daily_kline(r["code"], days=10)
-        if kline is not None and not kline.empty:
-            # 查找指定日期的数据
-            date_match = kline[kline["date"].dt.date == target_date]
-            if not date_match.empty:
-                row = date_match.iloc[-1]
-                item["latest_price"] = round(float(row["close"]), 2)
-                item["change_pct"] = round(float(row["change_pct"]), 2) if "change_pct" in row.index and row["change_pct"] == row["change_pct"] else None
-                item["volume"] = int(row["volume"])
-                item["turnover"] = round(float(row["turnover"]), 2) if "turnover" in row.index and row["turnover"] == row["turnover"] else None
-                item["data_date"] = actual_scan_date
-
-        # 只保留有该日期数据的股票
-        if item["data_date"] is not None:
-            items.append(item)
+    # 关键词过滤（代码或名称模糊匹配）
+    if keyword:
+        keyword_lower = keyword.lower()
+        items = [
+            item for item in items
+            if keyword_lower in item["stock_code"].lower() or keyword_lower in item["stock_name"].lower()
+        ]
 
     # 组合排序
     if sort_by:
