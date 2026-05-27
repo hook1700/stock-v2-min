@@ -7,8 +7,23 @@ from sqlalchemy import (
 from backend.database import Base
 
 
+class StockPool(Base):
+    """股票池表 - 存储全部可用A股，由定时脚本维护"""
+    __tablename__ = "stock_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False, index=True)     # 股票代码(纯数字)
+    stock_name = Column(String(20), nullable=False, default="")     # 股票名称
+    industry = Column(String(30), default="")                       # 所属行业
+    updated_at = Column(Date, nullable=False)                       # 最后更新日期
+
+    __table_args__ = (
+        UniqueConstraint("stock_code", name="uq_stock_code"),
+    )
+
+
 class StockDailyData(Base):
-    """股票日行情数据表 - 由同步脚本写入，列表接口直接查询"""
+    """股票日行情数据表 - 由同步脚本写入，策略从此表读取K线"""
     __tablename__ = "stock_daily_data"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -1,363 +1,183 @@
-"""数据服务层 - 封装BaoStock数据获取与缓存"""
+"""数据服务层 - 从SQLite数据库获取数据供策略使用"""
 import logging
-import time
-import pickle
-from datetime import date, datetime, timedelta
-from pathlib import Path
-from functools import wraps
+from datetime import date, timedelta
 from typing import Optional
 
-import re
-import baostock as bs
 import pandas as pd
 import numpy as np
+from sqlalchemy import text
 
 from backend.config import settings
+from backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# BaoStock 登录管理
-# BaoStock 是免费开源的证券数据接口，无需注册、无反爬限制
-# ============================================================
-_bs_logged_in = False
-
-
-def _ensure_bs_login():
-    """确保 BaoStock 已登录"""
-    global _bs_logged_in
-    if not _bs_logged_in:
-        lg = bs.login()
-        if lg.error_code == '0':
-            logger.info("BaoStock 登录成功")
-            _bs_logged_in = True
-        else:
-            logger.error(f"BaoStock 登录失败: {lg.error_msg}")
-            raise RuntimeError(f"BaoStock 登录失败: {lg.error_msg}")
-
-
-def _bs_logout():
-    """登出 BaoStock"""
-    global _bs_logged_in
-    if _bs_logged_in:
-        bs.logout()
-        _bs_logged_in = False
-
-
-def _code_to_bs(code: str) -> str:
-    """将纯数字股票代码转换为 BaoStock 格式 (sh.600000 / sz.000001)"""
-    if code.startswith(("sh.", "sz.")):
-        return code
-    if code.startswith(("6", "9")):
-        return f"sh.{code}"
-    else:
-        return f"sz.{code}"
-
-
-def _code_from_bs(bs_code: str) -> str:
-    """将 BaoStock 格式代码转换为纯数字代码"""
-    if "." in bs_code:
-        return bs_code.split(".")[1]
-    return bs_code
-
-
-
-def retry(max_retries: int = 3, base_delay: float = 1.0):
-    """BaoStock调用重试装饰器"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"{func.__name__} 调用失败（重试{max_retries}次）: {e}")
-                        return None
-                    wait = base_delay * (2 ** attempt)
-                    logger.warning(f"{func.__name__} 第{attempt+1}次失败，{wait}秒后重试: {e}")
-                    time.sleep(wait)
-                    # 重试时重新登录
-                    global _bs_logged_in
-                    _bs_logged_in = False
-                    try:
-                        _ensure_bs_login()
-                    except Exception:
-                        pass
-            return None
-        return wrapper
-    return decorator
-
-
 class DataService:
-    """统一数据获取服务，带日级缓存（基于BaoStock）"""
+    """统一数据获取服务（基于SQLite，数据由定时脚本预先写入）"""
 
     def __init__(self):
-        self._cache_dir = settings.CACHE_DIR
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-        _ensure_bs_login()
+        pass
 
-    def _get_cache_path(self, key: str, cache_date: date = None) -> Path:
-        """获取缓存文件路径"""
-        if cache_date is None:
-            cache_date = date.today()
-        return self._cache_dir / f"{key}_{cache_date.isoformat()}.pkl"
+    def _get_session(self):
+        return SessionLocal()
 
-    def _load_cache(self, key: str, cache_date: date = None):
-        """加载缓存"""
-        path = self._get_cache_path(key, cache_date)
-        if path.exists():
-            try:
-                with open(path, "rb") as f:
-                    return pickle.load(f)
-            except Exception:
-                return None
-        return None
-
-    def _save_cache(self, key: str, data, cache_date: date = None):
-        """保存缓存"""
-        path = self._get_cache_path(key, cache_date)
-        try:
-            with open(path, "wb") as f:
-                pickle.dump(data, f)
-        except Exception as e:
-            logger.warning(f"缓存保存失败 {key}: {e}")
-
-    def _clean_old_cache(self, days: int = 7):
-        """清理过期缓存文件"""
-        cutoff = datetime.now() - timedelta(days=days)
-        for f in self._cache_dir.glob("*.pkl"):
-            if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
-                f.unlink()
-
-    @retry(max_retries=3)
     def get_stock_pool(self) -> list[str]:
         """
-        获取全部A股股票池（排除ST/退市）
+        从stock_pool表获取全部A股股票池（排除ST/退市）
         返回股票代码列表
         """
-        cached = self._load_cache("stock_pool")
-        if cached is not None:
-            return cached
-
-        logger.info("正在获取A股股票池...")
-        _ensure_bs_login()
-
-        # 通过 BaoStock 获取全部 A 股列表
-        rs = bs.query_stock_basic(code_name="", code="")
-        stock_list = []
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            stock_list.append(row)
-
-        if not stock_list:
-            logger.error("BaoStock 获取股票列表为空")
+        session = self._get_session()
+        try:
+            result = session.execute(
+                text("SELECT stock_code FROM stock_pool ORDER BY stock_code")
+            )
+            codes = [row[0] for row in result]
+            if codes:
+                logger.info(f"从数据库加载股票池，共{len(codes)}只股票")
+            else:
+                logger.warning("数据库股票池为空，请先运行 fetch_and_sync.py 拉取数据")
+            return codes
+        except Exception as e:
+            logger.error(f"查询股票池失败: {e}")
             return []
+        finally:
+            session.close()
 
-        df = pd.DataFrame(stock_list, columns=rs.fields)
-
-        # 只保留 A 股（type=1 股票，status=1 上市）
-        df = df[(df["type"] == "1") & (df["status"] == "1")]
-
-        # 排除ST、*ST、退市股票（需转义正则特殊字符）
-        exclude_pattern = "|".join(re.escape(x) for x in settings.STOCK_POOL_EXCLUDE)
-        df = df[~df["code_name"].str.contains(exclude_pattern, na=False)]
-
-        # 转为纯数字代码
-        codes = [_code_from_bs(c) for c in df["code"].tolist()]
-
-        self._save_cache("stock_pool", codes)
-        logger.info(f"股票池获取完成，共{len(codes)}只股票")
-        return codes
-
-    @retry(max_retries=3)
     def get_stock_spot(self) -> pd.DataFrame:
         """
-        获取全部A股行情数据（日级缓存）
-        BaoStock不提供实时行情，使用最近交易日的收盘数据替代
-        返回包含代码、名称、最新价、市值等的DataFrame
+        获取全部A股行情数据（最近交易日收盘数据）
+        从stock_daily_data表取最近一个交易日的数据
         """
-        cached = self._load_cache("stock_spot")
-        if cached is not None:
-            return cached
+        session = self._get_session()
+        try:
+            # 获取最近交易日
+            result = session.execute(
+                text("SELECT MAX(trade_date) FROM stock_daily_data")
+            )
+            latest_date = result.scalar()
+            if latest_date is None:
+                logger.warning("stock_daily_data表为空")
+                return pd.DataFrame()
 
-        logger.info("正在获取A股行情数据（BaoStock最近交易日）...")
-        _ensure_bs_login()
+            # 查询该日所有股票数据
+            result = session.execute(
+                text("""
+                    SELECT stock_code, stock_name, close, volume, amount, change_pct, turnover
+                    FROM stock_daily_data
+                    WHERE trade_date = :d
+                    ORDER BY stock_code
+                """),
+                {"d": latest_date}
+            )
+            rows = result.fetchall()
+            if not rows:
+                return pd.DataFrame()
 
-        # 获取全部股票基本信息
-        rs = bs.query_stock_basic(code_name="", code="")
-        stock_list = []
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            stock_list.append(row)
+            spot_df = pd.DataFrame(rows, columns=[
+                "代码", "名称", "最新价", "成交量", "成交额", "涨跌幅", "换手率"
+            ])
+            # 补充兼容字段
+            spot_df["总市值"] = 0
+            spot_df["市盈率-动态"] = 0
+            spot_df["市净率"] = 0
 
-        if not stock_list:
+            logger.info(f"行情数据加载完成（{latest_date}），共{len(spot_df)}只股票")
+            return spot_df
+        except Exception as e:
+            logger.error(f"查询行情数据失败: {e}")
             return pd.DataFrame()
+        finally:
+            session.close()
 
-        df_basic = pd.DataFrame(stock_list, columns=rs.fields)
-        df_basic = df_basic[(df_basic["type"] == "1") & (df_basic["status"] == "1")]
-
-        # 获取最近交易日
-        today_str = date.today().strftime("%Y-%m-%d")
-        rs_trade = bs.query_trade_dates(start_date=(date.today() - timedelta(days=10)).strftime("%Y-%m-%d"),
-                                         end_date=today_str)
-        trade_dates = []
-        while (rs_trade.error_code == '0') and rs_trade.next():
-            row = rs_trade.get_row_data()
-            if row[1] == '1':  # is_trading_day
-                trade_dates.append(row[0])
-
-        if not trade_dates:
-            latest_trade_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-        else:
-            latest_trade_date = trade_dates[-1]
-
-        # 构建 spot DataFrame，通过 query_all_stock 获取可交易股票列表
-        rs_all = bs.query_all_stock(day=latest_trade_date)
-        tradable_codes = set()
-        while (rs_all.error_code == '0') and rs_all.next():
-            row_data = rs_all.get_row_data()
-            if len(row_data) >= 2 and row_data[1] == '1':  # tradeStatus=1 正常交易
-                tradable_codes.add(row_data[0])
-
-        # 构建结果
-        result_rows = []
-        for _, row in df_basic.iterrows():
-            bs_code = row["code"]
-            pure_code = _code_from_bs(bs_code)
-            name = row.get("code_name", "")
-
-            # 跳过非A股代码
-            if not (bs_code.startswith("sh.6") or bs_code.startswith("sz.0") or bs_code.startswith("sz.3")):
-                continue
-
-            r = {
-                "代码": pure_code,
-                "名称": name,
-                "最新价": 0,
-                "总市值": 0,
-                "市盈率-动态": 0,
-                "市净率": 0,
-                "换手率": 0,
-            }
-            result_rows.append(r)
-
-        spot_df = pd.DataFrame(result_rows)
-        self._save_cache("stock_spot", spot_df)
-        logger.info(f"行情数据构建完成，共{len(spot_df)}只股票")
-        return spot_df
-
-    @retry(max_retries=3)
     def get_daily_kline(self, code: str, days: int = 250) -> Optional[pd.DataFrame]:
         """
-        获取单只股票日K线数据（前复权）
+        从stock_daily_data表获取单只股票日K线数据（前复权）
         返回DataFrame: [date, open, close, high, low, volume, amount, turnover, change_pct]
         """
-        cache_key = f"kline_{code}_{days}"
-        cached = self._load_cache(cache_key)
-        if cached is not None:
-            return cached
-
+        session = self._get_session()
         try:
-            _ensure_bs_login()
-            end_date = date.today().strftime("%Y-%m-%d")
-            start_date = (date.today() - timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
-            bs_code = _code_to_bs(code)
-
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume,amount,turn,pctChg",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2",  # 前复权
+            # 查询该股票最近N天的数据
+            result = session.execute(
+                text("""
+                    SELECT trade_date, open, high, low, close, volume, amount, turnover, change_pct
+                    FROM stock_daily_data
+                    WHERE stock_code = :code AND volume > 0
+                    ORDER BY trade_date DESC
+                    LIMIT :limit
+                """),
+                {"code": code, "limit": days}
             )
+            rows = result.fetchall()
 
-            data_list = []
-            while (rs.error_code == '0') and rs.next():
-                data_list.append(rs.get_row_data())
-
-            if not data_list:
+            if not rows:
                 return None
 
-            df = pd.DataFrame(data_list, columns=rs.fields)
+            df = pd.DataFrame(rows, columns=[
+                "date", "open", "high", "low", "close", "volume", "amount", "turnover", "change_pct"
+            ])
 
             # 转换数据类型
             df["date"] = pd.to_datetime(df["date"])
-            for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
+            for col in ["open", "high", "low", "close", "volume", "amount", "turnover", "change_pct"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            # 标准化列名（与原接口保持一致）
-            df = df.rename(columns={
-                "high": "high",
-                "low": "low",
-                "open": "open",
-                "close": "close",
-                "volume": "volume",
-                "amount": "amount",
-                "turn": "turnover",
-                "pctChg": "change_pct",
-            })
-
-            # 过滤无效数据（停牌日 volume=0）
-            df = df[df["volume"] > 0]
+            # 按日期正序排列
             df = df.sort_values("date").reset_index(drop=True)
 
-            # 只保留最近N天
-            df = df.tail(days).reset_index(drop=True)
-
-            self._save_cache(cache_key, df)
             return df
 
         except Exception as e:
             logger.debug(f"获取{code}K线失败: {e}")
             return None
+        finally:
+            session.close()
 
-    @retry(max_retries=3)
     def get_stock_name(self, code: str) -> str:
         """获取股票名称"""
+        session = self._get_session()
         try:
-            spot_df = self.get_stock_spot()
-            if spot_df is not None:
-                match = spot_df[spot_df["代码"] == code]
-                if not match.empty:
-                    return match.iloc[0]["名称"]
+            result = session.execute(
+                text("SELECT stock_name FROM stock_pool WHERE stock_code = :code"),
+                {"code": code}
+            )
+            row = result.fetchone()
+            if row:
+                return row[0]
         except Exception:
             pass
+        finally:
+            session.close()
         return code
 
-    @retry(max_retries=2)
     def get_fundamentals(self, code: str) -> Optional[dict]:
         """
         获取股票基本面数据
-        返回: {pe, pb, dividend_yield, debt_ratio, profit_growth_3y, market_cap, industry}
+        从数据库K线数据中近似计算，基础数据由fetch脚本写入
         """
-        cache_key = f"fundamental_{code}"
-        cached = self._load_cache(cache_key)
-        if cached is not None:
-            return cached
-
+        session = self._get_session()
         try:
-            _ensure_bs_login()
-            bs_code = _code_to_bs(code)
+            # 获取股票名称和行业
+            pool_result = session.execute(
+                text("SELECT stock_name, industry FROM stock_pool WHERE stock_code = :code"),
+                {"code": code}
+            )
+            pool_row = pool_result.fetchone()
+            name = pool_row[0] if pool_row else ""
+            industry = pool_row[1] if pool_row else ""
 
-            # 获取实时行情中的基本信息
-            spot_df = self.get_stock_spot()
-            name = ""
-            current_price = 0
-            if spot_df is not None:
-                stock_row = spot_df[spot_df["代码"] == code]
-                if not stock_row.empty:
-                    row = stock_row.iloc[0]
-                    name = row.get("名称", "")
-                    current_price = float(row.get("最新价", 0) or 0)
-
-            # 如果 spot 中没有价格，从 K 线取最新收盘价
-            if current_price == 0:
-                kline = self.get_daily_kline(code, days=5)
-                if kline is not None and not kline.empty:
-                    current_price = float(kline.iloc[-1]["close"])
+            # 获取最新收盘价
+            price_result = session.execute(
+                text("""
+                    SELECT close, turnover FROM stock_daily_data
+                    WHERE stock_code = :code AND volume > 0
+                    ORDER BY trade_date DESC LIMIT 1
+                """),
+                {"code": code}
+            )
+            price_row = price_result.fetchone()
+            current_price = float(price_row[0]) if price_row and price_row[0] else 0
+            turnover = float(price_row[1]) if price_row and price_row[1] else 0
 
             result = {
                 "code": code,
@@ -366,211 +186,99 @@ class DataService:
                 "pb": 0,
                 "market_cap": 0,
                 "current_price": current_price,
-                "turnover": 0,
+                "turnover": turnover,
                 "dividend_yield": 0,
                 "debt_ratio": 0,
                 "profit_growth_3y": 0,
+                "industry": industry,
             }
 
-            # 通过 BaoStock query_dupont_data 获取 ROE 等杜邦分析数据
-            year = date.today().year
-            quarter = (date.today().month - 1) // 3
-            if quarter == 0:
-                year -= 1
-                quarter = 4
-
-            # 尝试获取最近几个季度的盈利数据（含PE/PB近似计算）
-            for q_offset in range(6):
-                q = quarter - q_offset
-                y = year
-                while q <= 0:
-                    q += 4
-                    y -= 1
-
-                rs_profit = bs.query_profit_data(code=bs_code, year=y, quarter=q)
-                profit_list = []
-                while (rs_profit.error_code == '0') and rs_profit.next():
-                    profit_list.append(rs_profit.get_row_data())
-
-                if profit_list:
-                    df_profit = pd.DataFrame(profit_list, columns=rs_profit.fields)
-                    if not df_profit.empty:
-                        latest_p = df_profit.iloc[-1]
-                        result["debt_ratio"] = float(latest_p.get("liabilityToAsset", 0) or 0) / 100.0
-
-                        # 通过每股收益计算PE
-                        eps = float(latest_p.get("epsTTM", 0) or 0)
-                        if eps > 0 and current_price > 0:
-                            # 如果是季度数据，年化
-                            result["pe"] = current_price / eps
-
-                        # 通过每股净资产计算PB
-                        bps = float(latest_p.get("netAssetPerShare", 0) or 0)
-                        if bps > 0 and current_price > 0:
-                            result["pb"] = current_price / bps
-
-                        # 估算总市值（通过总股本）
-                        total_share = float(latest_p.get("liqAShareTotal", 0) or 0)
-                        if total_share > 0 and current_price > 0:
-                            result["market_cap"] = current_price * total_share * 10000  # 单位：元
-                    break
-
-            # 获取行业
-            rs_ind = bs.query_stock_industry(code=bs_code)
-            ind_list = []
-            while (rs_ind.error_code == '0') and rs_ind.next():
-                ind_list.append(rs_ind.get_row_data())
-            if ind_list:
-                df_ind = pd.DataFrame(ind_list, columns=rs_ind.fields)
-                if not df_ind.empty:
-                    result["industry"] = df_ind.iloc[-1].get("industry", "")
-
-            # 获取股息率数据（优先当年，fallback到上一年）
+            # 尝试从 stock_fundamentals 表获取更多数据（如果有的话）
             try:
-                dividend_found = False
-                for div_year in [year, year - 1]:
-                    rs_div = bs.query_dividend_data(code=bs_code, year=str(div_year), yearType="report")
-                    div_list = []
-                    while (rs_div.error_code == '0') and rs_div.next():
-                        div_list.append(rs_div.get_row_data())
-                    if div_list and current_price > 0:
-                        df_div = pd.DataFrame(div_list, columns=rs_div.fields)
-                        total_dividend = pd.to_numeric(df_div["perStockDiv"], errors="coerce").sum()
-                        if total_dividend > 0:
-                            result["dividend_yield"] = total_dividend / current_price
-                            dividend_found = True
-                            break
+                fund_result = session.execute(
+                    text("""
+                        SELECT pe, pb, dividend_yield, debt_ratio, market_cap
+                        FROM stock_fundamentals
+                        WHERE stock_code = :code
+                        ORDER BY updated_at DESC LIMIT 1
+                    """),
+                    {"code": code}
+                )
+                fund_row = fund_result.fetchone()
+                if fund_row:
+                    result["pe"] = float(fund_row[0] or 0)
+                    result["pb"] = float(fund_row[1] or 0)
+                    result["dividend_yield"] = float(fund_row[2] or 0)
+                    result["debt_ratio"] = float(fund_row[3] or 0)
+                    result["market_cap"] = float(fund_row[4] or 0)
             except Exception:
+                # stock_fundamentals 表可能不存在，忽略
                 pass
 
-            # 若仍无PE，尝试上一年度
-            if result["pe"] == 0:
-                try:
-                    for q_offset in range(4):
-                        q = 4 - q_offset
-                        rs_p2 = bs.query_profit_data(code=bs_code, year=year - 1, quarter=q)
-                        p2_list = []
-                        while (rs_p2.error_code == '0') and rs_p2.next():
-                            p2_list.append(rs_p2.get_row_data())
-                        if p2_list:
-                            df_p2 = pd.DataFrame(p2_list, columns=rs_p2.fields)
-                            if not df_p2.empty:
-                                eps2 = float(df_p2.iloc[-1].get("epsTTM", 0) or 0)
-                                if eps2 > 0 and current_price > 0:
-                                    result["pe"] = current_price / eps2
-                                bps2 = float(df_p2.iloc[-1].get("netAssetPerShare", 0) or 0)
-                                if bps2 > 0 and current_price > 0 and result["pb"] == 0:
-                                    result["pb"] = current_price / bps2
-                            break
-                except Exception:
-                    pass
-
-            self._save_cache(cache_key, result)
             return result
 
         except Exception as e:
             logger.debug(f"获取{code}基本面失败: {e}")
             return None
+        finally:
+            session.close()
 
-    @retry(max_retries=3)
     def get_shenwan_sectors(self) -> Optional[pd.DataFrame]:
         """
-        获取申万一级行业分类及成分股数据
-        BaoStock 提供行业分类查询，通过 query_stock_industry 获取
-        返回DataFrame: [板块代码, 板块名称, ...]
+        获取申万一级行业分类数据
+        从stock_pool表的industry字段聚合
         """
-        cached = self._load_cache("shenwan_sectors")
-        if cached is not None:
-            return cached
-
+        session = self._get_session()
         try:
-            _ensure_bs_login()
-            # BaoStock 通过 query_stock_industry 获取行业分类
-            # 获取股票池中所有股票的行业信息
-            stock_pool = self.get_stock_pool()
-            if not stock_pool:
+            result = session.execute(
+                text("""
+                    SELECT industry, COUNT(*) as stock_count
+                    FROM stock_pool
+                    WHERE industry IS NOT NULL AND industry != ''
+                    GROUP BY industry
+                    ORDER BY stock_count DESC
+                """)
+            )
+            rows = result.fetchall()
+            if not rows:
                 return None
 
-            # 抽样获取行业信息（全量太慢）
-            sample_codes = stock_pool[:500]
-            industry_map = {}
-
-            for code in sample_codes:
-                bs_code = _code_to_bs(code)
-                rs_ind = bs.query_stock_industry(code=bs_code)
-                while (rs_ind.error_code == '0') and rs_ind.next():
-                    row = rs_ind.get_row_data()
-                    ind_name = row[3] if len(row) > 3 else ""  # industry 字段
-                    ind_code = row[2] if len(row) > 2 else ""  # industryClassification
-                    if ind_name and ind_name not in industry_map:
-                        industry_map[ind_name] = {
-                            "板块代码": ind_code or ind_name,
-                            "板块名称": ind_name,
-                            "stock_count": 0,
-                        }
-                    if ind_name:
-                        industry_map[ind_name]["stock_count"] = \
-                            industry_map.get(ind_name, {}).get("stock_count", 0) + 1
-
-            if not industry_map:
-                return None
-
-            df = pd.DataFrame(list(industry_map.values()))
-            self._save_cache("shenwan_sectors", df)
-            return df
+            df = pd.DataFrame(rows, columns=["板块名称", "stock_count"])
+            df["板块代码"] = df["板块名称"]
+            return df[["板块代码", "板块名称", "stock_count"]]
 
         except Exception as e:
             logger.warning(f"获取行业数据失败: {e}")
             return None
+        finally:
+            session.close()
 
-    @retry(max_retries=3)
     def get_sector_constituents(self, sector_code: str) -> Optional[list]:
         """获取行业板块成分股代码列表"""
-        cache_key = f"sector_cons_{sector_code}"
-        cached = self._load_cache(cache_key)
-        if cached is not None:
-            return cached
-
+        session = self._get_session()
         try:
-            _ensure_bs_login()
-            # 通过遍历股票池获取属于该行业的股票
-            stock_pool = self.get_stock_pool()
-            if not stock_pool:
-                return None
-
-            codes_in_sector = []
-            for code in stock_pool:
-                bs_code = _code_to_bs(code)
-                rs_ind = bs.query_stock_industry(code=bs_code)
-                while (rs_ind.error_code == '0') and rs_ind.next():
-                    row = rs_ind.get_row_data()
-                    ind_name = row[3] if len(row) > 3 else ""
-                    ind_code = row[2] if len(row) > 2 else ""
-                    if ind_name == sector_code or ind_code == sector_code:
-                        codes_in_sector.append(code)
-                        break
-
-            if codes_in_sector:
-                self._save_cache(cache_key, codes_in_sector)
-            return codes_in_sector if codes_in_sector else None
-
+            result = session.execute(
+                text("""
+                    SELECT stock_code FROM stock_pool
+                    WHERE industry = :sector
+                    ORDER BY stock_code
+                """),
+                {"sector": sector_code}
+            )
+            codes = [row[0] for row in result]
+            return codes if codes else None
         except Exception as e:
             logger.debug(f"获取板块{sector_code}成分股失败: {e}")
-        return None
+            return None
+        finally:
+            session.close()
 
-    @retry(max_retries=3)
     def get_sector_history(self, sector_code: str, days: int = 60) -> Optional[pd.DataFrame]:
         """
         获取板块历史数据
-        BaoStock 不直接支持行业指数K线，通过成分股均值模拟
+        通过成分股均值模拟板块走势
         """
-        cache_key = f"sector_hist_{sector_code}_{days}"
-        cached = self._load_cache(cache_key)
-        if cached is not None:
-            return cached
-
         try:
-            # 获取该板块成分股
             constituents = self.get_sector_constituents(sector_code)
             if not constituents:
                 return None
@@ -595,7 +303,6 @@ class DataService:
 
             merged = merged.sort_values("date").reset_index(drop=True)
 
-            # 计算板块平均涨跌幅
             pct_cols = [c for c in merged.columns if c.startswith("pct_")]
             close_cols = [c for c in merged.columns if c.startswith("close_")]
 
@@ -605,15 +312,14 @@ class DataService:
             df_result["change_pct"] = merged[pct_cols].mean(axis=1) if pct_cols else 0
 
             df_result = df_result.dropna(subset=["close"]).tail(days).reset_index(drop=True)
-            self._save_cache(cache_key, df_result)
             return df_result
 
         except Exception as e:
             logger.debug(f"获取板块{sector_code}历史失败: {e}")
-        return None
+            return None
 
     def is_trading_day(self, check_date: date = None) -> bool:
-        """判断是否为交易日"""
+        """判断是否为交易日（从数据库判断）"""
         if check_date is None:
             check_date = date.today()
 
@@ -621,14 +327,40 @@ class DataService:
         if check_date.weekday() >= 5:
             return False
 
+        session = self._get_session()
         try:
-            _ensure_bs_login()
-            date_str = check_date.strftime("%Y-%m-%d")
-            rs = bs.query_trade_dates(start_date=date_str, end_date=date_str)
-            while (rs.error_code == '0') and rs.next():
-                row = rs.get_row_data()
-                return row[1] == '1'  # is_trading_day
+            # 检查数据库中该日期是否有数据
+            result = session.execute(
+                text("""
+                    SELECT COUNT(*) FROM stock_daily_data
+                    WHERE trade_date = :d
+                    LIMIT 1
+                """),
+                {"d": check_date}
+            )
+            count = result.scalar()
+            if count and count > 0:
+                return True
+
+            # 如果数据库中没有该日期数据，可能是还没拉取
+            # 回退逻辑：检查最近5天是否有数据（说明数据库有效）
+            result2 = session.execute(
+                text("""
+                    SELECT MAX(trade_date) FROM stock_daily_data
+                    WHERE trade_date <= :d
+                """),
+                {"d": check_date}
+            )
+            max_date = result2.scalar()
+            if max_date is None:
+                # 数据库完全为空，降级为仅判断工作日
+                return check_date.weekday() < 5
+
+            # 如果查询日期就是数据库中最新日期（今天数据已入库），就是交易日
+            # 否则如果是工作日，也认为是交易日（今天数据可能尚未入库）
+            return check_date.weekday() < 5
+
         except Exception:
-            pass
-        # 降级：仅判断工作日
-        return check_date.weekday() < 5
+            return check_date.weekday() < 5
+        finally:
+            session.close()
