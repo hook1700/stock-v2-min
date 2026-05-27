@@ -1,10 +1,14 @@
 """股票数据API端点"""
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, desc, asc
+from sqlalchemy.orm import Session
 
+from backend.database import get_db
+from backend.models import StockDailyData
 from backend.schemas import KLineDataResponse
 from backend.services.data_service import DataService
 from backend.analysis.technical import compute_ma
@@ -14,112 +18,83 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 data_service = DataService()
 
-
-def _get_latest_trade_date() -> str:
-    """获取最新交易日日期字符串（YYYY-MM-DD）"""
-    import baostock as bs
-    today = date.today()
-    try:
-        rs = bs.query_trade_dates(
-            start_date=(today - timedelta(days=15)).strftime("%Y-%m-%d"),
-            end_date=today.strftime("%Y-%m-%d"),
-        )
-        trade_dates = []
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            if row[1] == '1':
-                trade_dates.append(row[0])
-        if trade_dates:
-            return trade_dates[-1]
-    except Exception as e:
-        logger.warning(f"获取最新交易日失败: {e}")
-    # 降级：返回最近的工作日
-    d = today
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
+# 允许排序的字段白名单
+SORTABLE_FIELDS = {"change_pct", "volume", "turnover"}
 
 
 @router.get("/list")
 async def get_stock_list(
     keyword: Optional[str] = Query(None, description="股票代码或名称模糊搜索"),
-    scan_date: Optional[str] = Query(None, description="数据日期，格式YYYY-MM-DD，默认最新交易日"),
+    scan_date: Optional[str] = Query(None, description="数据日期，格式YYYY-MM-DD，默认数据库最新日期"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     sort_by: Optional[str] = Query(None, description="排序字段，支持组合排序，逗号分隔。如: change_pct,-volume,turnover"),
+    db: Session = Depends(get_db),
 ):
     """
-    获取股票列表，支持按代码/名称模糊搜索、日期过滤和组合排序。
+    获取股票列表，直接查询数据库，支持模糊搜索、日期过滤和组合排序。
 
     排序规则：
     - sort_by 支持字段: change_pct(涨跌幅), volume(成交量), turnover(换手率)
     - 字段前加 '-' 表示倒序(降序)，不加表示正序(升序)
     - 多字段用逗号分隔，优先级从左到右
-    - 示例: sort_by=change_pct (涨跌幅升序)
     - 示例: sort_by=-change_pct (涨跌幅降序)
     - 示例: sort_by=-change_pct,volume (先按涨跌幅降序，再按成交量升序)
     """
-    # 默认使用最新交易日作为日期过滤条件
+    # 确定查询日期：如果未指定，使用数据库中最新的日期
     if scan_date:
         try:
-            date.fromisoformat(scan_date)
+            target_date = date.fromisoformat(scan_date)
         except ValueError:
             raise HTTPException(status_code=400, detail="日期格式错误，应为YYYY-MM-DD")
-        actual_scan_date = scan_date
     else:
-        actual_scan_date = _get_latest_trade_date()
+        # 获取数据库中最新的交易日期
+        latest = db.query(func.max(StockDailyData.trade_date)).scalar()
+        if latest is None:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "scan_date": None}
+        target_date = latest
 
-    # 批量获取该日全市场行情（带缓存，首次慢，后续秒返回）
-    daily_df = data_service.get_all_stocks_daily(actual_scan_date)
-    if daily_df is None or daily_df.empty:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size, "scan_date": actual_scan_date}
+    actual_scan_date = target_date.isoformat() if isinstance(target_date, date) else str(target_date)
 
-    # 获取spot数据（包含名称）用于名称匹配
-    spot_df = data_service.get_stock_spot()
+    # 构建查询
+    query = db.query(StockDailyData).filter(StockDailyData.trade_date == target_date)
 
-    # 构建名称映射
-    name_map = {}
-    if spot_df is not None and not spot_df.empty:
-        name_map = dict(zip(spot_df["代码"], spot_df["名称"]))
-
-    # 构建结果列表
-    items = []
-    for _, row in daily_df.iterrows():
-        code = row["code"]
-        name = name_map.get(code, "")
-        items.append({
-            "stock_code": code,
-            "stock_name": name,
-            "latest_price": round(float(row["close"]), 2) if row["close"] == row["close"] else None,
-            "change_pct": round(float(row["change_pct"]), 2) if row["change_pct"] == row["change_pct"] else None,
-            "volume": int(row["volume"]) if row["volume"] == row["volume"] else None,
-            "turnover": round(float(row["turnover"]), 2) if row["turnover"] == row["turnover"] else None,
-            "data_date": actual_scan_date,
-        })
-
-    # 关键词过滤（代码或名称模糊匹配）
+    # 关键词过滤
     if keyword:
-        keyword_lower = keyword.lower()
-        items = [
-            item for item in items
-            if keyword_lower in item["stock_code"].lower() or keyword_lower in item["stock_name"].lower()
-        ]
+        keyword_like = f"%{keyword}%"
+        query = query.filter(
+            (StockDailyData.stock_code.like(keyword_like)) |
+            (StockDailyData.stock_name.like(keyword_like))
+        )
 
     # 组合排序
     if sort_by:
-        sort_fields = _parse_sort_fields(sort_by)
-        if sort_fields:
-            items = _multi_sort(items, sort_fields)
+        order_clauses = _build_order_clauses(sort_by)
+        if order_clauses:
+            query = query.order_by(*order_clauses)
 
-    total = len(items)
+    # 获取总数
+    total = query.count()
 
     # 分页
-    start = (page - 1) * page_size
-    end = start + page_size
-    paged_items = items[start:end]
+    offset = (page - 1) * page_size
+    rows = query.offset(offset).limit(page_size).all()
+
+    # 构建响应
+    items = []
+    for row in rows:
+        items.append({
+            "stock_code": row.stock_code,
+            "stock_name": row.stock_name,
+            "latest_price": round(row.close, 2) if row.close else None,
+            "change_pct": round(row.change_pct, 2) if row.change_pct is not None else None,
+            "volume": int(row.volume) if row.volume else None,
+            "turnover": round(row.turnover, 2) if row.turnover is not None else None,
+            "data_date": actual_scan_date,
+        })
 
     return {
-        "items": paged_items,
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -127,57 +102,45 @@ async def get_stock_list(
     }
 
 
-# 允许排序的字段白名单
-SORTABLE_FIELDS = {"change_pct", "volume", "turnover"}
+@router.get("/dates")
+async def get_available_dates(db: Session = Depends(get_db)):
+    """获取数据库中可用的交易日期列表（降序）"""
+    dates = db.query(StockDailyData.trade_date).distinct().order_by(
+        desc(StockDailyData.trade_date)
+    ).limit(30).all()
+    return {"dates": [d[0].isoformat() for d in dates]}
 
 
-def _parse_sort_fields(sort_by: str) -> list[tuple[str, bool]]:
-    """
-    解析排序参数，返回 [(field, ascending), ...] 列表
-    字段前加 '-' 表示降序
-    """
-    sort_fields = []
+def _build_order_clauses(sort_by: str):
+    """解析排序参数，返回SQLAlchemy排序子句列表"""
+    from sqlalchemy import case
+
+    # 字段名到模型属性的映射
+    field_map = {
+        "change_pct": StockDailyData.change_pct,
+        "volume": StockDailyData.volume,
+        "turnover": StockDailyData.turnover,
+    }
+
+    clauses = []
     for part in sort_by.split(","):
         part = part.strip()
         if not part:
             continue
         if part.startswith("-"):
             field = part[1:]
-            ascending = False
+            direction = desc
         else:
             field = part
-            ascending = True
-        if field in SORTABLE_FIELDS:
-            sort_fields.append((field, ascending))
-    return sort_fields
+            direction = asc
 
+        if field in field_map:
+            col = field_map[field]
+            # SQLite不支持NULLS LAST，用case表达式将NULL排到最后
+            clauses.append(case((col.is_(None), 1), else_=0))
+            clauses.append(direction(col))
 
-def _multi_sort(items: list[dict], sort_fields: list[tuple[str, bool]]) -> list[dict]:
-    """
-    多字段组合排序
-    sort_fields: [(field, ascending), ...]
-    None值排在最后
-    """
-    from functools import cmp_to_key
-
-    def compare(a, b):
-        for field, ascending in sort_fields:
-            val_a = a.get(field)
-            val_b = b.get(field)
-            # None值排在最后
-            if val_a is None and val_b is None:
-                continue
-            if val_a is None:
-                return 1
-            if val_b is None:
-                return -1
-            if val_a < val_b:
-                return -1 if ascending else 1
-            elif val_a > val_b:
-                return 1 if ascending else -1
-        return 0
-
-    return sorted(items, key=cmp_to_key(compare))
+    return clauses
 
 
 @router.get("/{code}/kline", response_model=KLineDataResponse)

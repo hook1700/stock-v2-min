@@ -129,7 +129,12 @@ def fetch_stock_pool(df_basic: pd.DataFrame) -> list:
     return codes
 
 
+# 名称映射（在 fetch_stock_pool 中填充）
+_name_map = {}
+
+
 def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
+    """拉取K线数据并写入数据库"""
     if top_n > 0:
         codes = codes[:top_n]
     total = len(codes)
@@ -137,7 +142,23 @@ def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
     end_date = date.today().strftime("%Y-%m-%d")
     start_date = (date.today() - timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
 
+    # 准备数据库写入
+    from backend.database import engine, Base, SessionLocal
+    from backend.models import StockDailyData
+    Base.metadata.create_all(bind=engine)
+
+    # 加载名称映射
+    spot_path = cache_path("stock_spot")
+    name_map = {}
+    if spot_path.exists():
+        with open(spot_path, "rb") as f:
+            spot_df = pickle.load(f)
+            if spot_df is not None and not spot_df.empty:
+                name_map = dict(zip(spot_df["代码"], spot_df["名称"]))
+
     ok, fail = 0, 0
+    db_rows = []  # 收集要写入数据库的行
+
     for i, code in enumerate(codes, 1):
         try:
             bs_code = _code_to_bs(code)
@@ -171,6 +192,25 @@ def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
             df = df[df["volume"] > 0]
             df = df.sort_values("date").reset_index(drop=True).tail(days).reset_index(drop=True)
             save_cache(f"kline_{code}_{days}", df)
+
+            # 收集最近几天的数据写入数据库（保留最近5天，便于切换日期查看）
+            stock_name = name_map.get(code, "")
+            recent_df = df.tail(5)
+            for _, row in recent_df.iterrows():
+                db_rows.append({
+                    "trade_date": row["date"].date() if hasattr(row["date"], "date") else row["date"],
+                    "stock_code": code,
+                    "stock_name": stock_name,
+                    "open": float(row["open"]) if row["open"] == row["open"] else None,
+                    "close": float(row["close"]) if row["close"] == row["close"] else None,
+                    "high": float(row["high"]) if row["high"] == row["high"] else None,
+                    "low": float(row["low"]) if row["low"] == row["low"] else None,
+                    "volume": float(row["volume"]) if row["volume"] == row["volume"] else None,
+                    "amount": float(row["amount"]) if row["amount"] == row["amount"] else None,
+                    "change_pct": float(row["change_pct"]) if row["change_pct"] == row["change_pct"] else None,
+                    "turnover": float(row["turnover"]) if row["turnover"] == row["turnover"] else None,
+                })
+
             ok += 1
         except Exception as e:
             fail += 1
@@ -180,6 +220,26 @@ def fetch_klines(codes: list, days: int = 250, top_n: int = 0):
             logger.info(f"  进度 {i}/{total}  成功 {ok}  失败 {fail}")
 
     logger.info(f"  K线完成: 成功 {ok}  失败 {fail}")
+
+    # 批量写入数据库
+    if db_rows:
+        logger.info(f"  写入数据库 {len(db_rows)} 条日行情记录...")
+        session = SessionLocal()
+        try:
+            # 获取本次涉及的日期范围，先删除旧数据再插入（upsert策略）
+            dates_in_batch = list(set(r["trade_date"] for r in db_rows))
+            for d in dates_in_batch:
+                session.query(StockDailyData).filter(
+                    StockDailyData.trade_date == d
+                ).delete()
+            session.bulk_insert_mappings(StockDailyData, db_rows)
+            session.commit()
+            logger.info(f"  数据库写入成功 ✓ ({len(db_rows)} 条)")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"  数据库写入失败: {e}")
+        finally:
+            session.close()
 
 
 def fetch_sectors():
@@ -246,6 +306,21 @@ def sync_to_remote():
         logger.error("scp 同步失败！请检查 SSH 私钥路径和服务器连通性。")
         sys.exit(1)
     logger.info("同步成功 ✓")
+
+    # 同步数据库文件到服务器
+    db_path = ROOT / "backend" / "data" / "stock_v2.db"
+    if db_path.exists():
+        logger.info("同步数据库到服务器...")
+        cmd_db = (
+            f'scp -i "{key}" -o StrictHostKeyChecking=no '
+            f'"{db_path}" '
+            f'{user}@{host}:{remote}/backend/data/stock_v2.db'
+        )
+        ret = subprocess.call(cmd_db, shell=True)
+        if ret == 0:
+            logger.info("数据库同步成功 ✓")
+        else:
+            logger.warning("数据库同步失败，列表接口可能无数据")
 
 
 def main():

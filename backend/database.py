@@ -32,7 +32,7 @@ def init_db():
     settings.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     from backend.models import (
-        StockRecommendation, SectorAnalysis,
+        StockDailyData, StockRecommendation, SectorAnalysis,
         SectorStockPick, SchedulerLog
     )
     Base.metadata.create_all(bind=engine)

@@ -2,9 +2,34 @@
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Float, Date, DateTime,
-    Text, Boolean, JSON, ForeignKey, Index
+    Text, Boolean, JSON, ForeignKey, Index, UniqueConstraint
 )
 from backend.database import Base
+
+
+class StockDailyData(Base):
+    """股票日行情数据表 - 由同步脚本写入，列表接口直接查询"""
+    __tablename__ = "stock_daily_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)           # 交易日期
+    stock_code = Column(String(10), nullable=False, index=True)     # 股票代码
+    stock_name = Column(String(20), nullable=False, default="")     # 股票名称
+    open = Column(Float)                                            # 开盘价
+    close = Column(Float)                                           # 收盘价
+    high = Column(Float)                                            # 最高价
+    low = Column(Float)                                             # 最低价
+    volume = Column(Float)                                          # 成交量
+    amount = Column(Float)                                          # 成交额
+    change_pct = Column(Float)                                      # 涨跌幅(%)
+    turnover = Column(Float)                                        # 换手率(%)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stock_code", name="uq_date_code"),
+        Index("idx_trade_date", "trade_date"),
+        Index("idx_stock_code_date", "stock_code", "trade_date"),
+    )
 
 
 class StockRecommendation(Base):
