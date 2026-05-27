@@ -138,9 +138,9 @@ class MAPullbackStrategy(BaseStrategy):
         if recent_above_count < lookback * 0.5:
             return None
 
-        # 确认是首次或第二次回踩（找历史回踩次数）
+        # 确认是首次到第三次回踩（放宽到3次）
         pullback_count = self._count_recent_pullbacks(df, target_ma)
-        if pullback_count > 2:
+        if pullback_count > 3:
             return None
 
         return {

@@ -1,5 +1,10 @@
 import api from './index'
 
+/** 获取股票列表（支持模糊搜索和日期过滤） */
+export function getStockList(params = {}) {
+  return api.get('/stocks/list', { params })
+}
+
 /** 获取股票K线数据 */
 export function getStockKline(code, days = 180) {
   return api.get(`/stocks/${code}/kline`, { params: { days } })

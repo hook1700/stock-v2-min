@@ -211,26 +211,31 @@ class VolumeBreakoutStrategy(BaseStrategy):
     def _is_stabilizing(self, df: pd.DataFrame, pullback: dict) -> bool:
         """
         检测企稳信号
-        条件：
-        1. 振幅收窄（<5%）
-        2. K线实体较小（实体占比<0.6）
+        条件（放宽）：
+        1. 最近2天中至少1天振幅<阈值
+        2. K线实体较小（实体占比<0.7）
         """
-        latest = df.iloc[-1]
+        # 检查最近2天是否有企稳迹象
+        for offset in range(min(2, len(df))):
+            row = df.iloc[-1 - offset]
 
-        # 振幅检查
-        if latest["close"] == 0:
-            return False
-        amplitude = (latest["high"] - latest["low"]) / latest["close"]
-        if amplitude > settings.STABILIZE_AMPLITUDE:
-            return False
+            if row["close"] == 0:
+                continue
 
-        # K线实体不能太大（允许小阴小阳，不要求严格十字星）
-        body = abs(latest["close"] - latest["open"])
-        total_range = latest["high"] - latest["low"]
-        if total_range > 0 and body / total_range > 0.6:
-            return False
+            # 振幅检查
+            amplitude = (row["high"] - row["low"]) / row["close"]
+            if amplitude > settings.STABILIZE_AMPLITUDE:
+                continue
 
-        return True
+            # K线实体不能太大
+            body = abs(row["close"] - row["open"])
+            total_range = row["high"] - row["low"]
+            if total_range > 0 and body / total_range > 0.7:
+                continue
+
+            return True
+
+        return False
 
     def _build_signal(self, code: str, df: pd.DataFrame, breakout: dict, pullback: dict) -> TradeSignal:
         """构建交易信号"""

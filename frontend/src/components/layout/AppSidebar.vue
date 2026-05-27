@@ -37,6 +37,11 @@
         <el-icon><Clock /></el-icon>
         <span>历史推荐</span>
       </el-menu-item>
+
+      <el-menu-item index="/stock-list">
+        <el-icon><List /></el-icon>
+        <span>股票列表</span>
+      </el-menu-item>
     </el-menu>
   </div>
 </template>

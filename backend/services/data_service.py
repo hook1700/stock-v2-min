@@ -425,16 +425,21 @@ class DataService:
                 if not df_ind.empty:
                     result["industry"] = df_ind.iloc[-1].get("industry", "")
 
-            # 获取股息率数据
+            # 获取股息率数据（优先当年，fallback到上一年）
             try:
-                rs_div = bs.query_dividend_data(code=bs_code, year=str(year), yearType="report")
-                div_list = []
-                while (rs_div.error_code == '0') and rs_div.next():
-                    div_list.append(rs_div.get_row_data())
-                if div_list and current_price > 0:
-                    df_div = pd.DataFrame(div_list, columns=rs_div.fields)
-                    total_dividend = pd.to_numeric(df_div["perStockDiv"], errors="coerce").sum()
-                    result["dividend_yield"] = total_dividend / current_price if current_price > 0 else 0
+                dividend_found = False
+                for div_year in [year, year - 1]:
+                    rs_div = bs.query_dividend_data(code=bs_code, year=str(div_year), yearType="report")
+                    div_list = []
+                    while (rs_div.error_code == '0') and rs_div.next():
+                        div_list.append(rs_div.get_row_data())
+                    if div_list and current_price > 0:
+                        df_div = pd.DataFrame(div_list, columns=rs_div.fields)
+                        total_dividend = pd.to_numeric(df_div["perStockDiv"], errors="coerce").sum()
+                        if total_dividend > 0:
+                            result["dividend_yield"] = total_dividend / current_price
+                            dividend_found = True
+                            break
             except Exception:
                 pass
 

@@ -88,12 +88,12 @@ class StrategyRunner:
                         f"{', '.join(s.stock_name for s in picks)}"
                     )
                 else:
-                    logger.info(f"  策略 [{strategy.strategy_name}] 未发现符合条件的股票")
+                    logger.warning(f"  策略 [{strategy.strategy_name}] 未发现符合条件的股票（全部股票池{len(stock_pool)}只均不满足）")
 
                 strategies_completed += 1
             except Exception as e:
                 error_msg = f"策略 [{strategy.strategy_name}] 执行失败: {e}"
-                logger.error(error_msg)
+                logger.error(error_msg, exc_info=True)
                 errors.append(error_msg)
 
         # 执行板块轮动分析

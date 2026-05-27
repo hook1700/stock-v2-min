@@ -31,6 +31,12 @@ const routes = [
     component: () => import('@/views/History.vue'),
     meta: { title: '历史推荐' },
   },
+  {
+    path: '/stock-list',
+    name: 'StockList',
+    component: () => import('@/views/StockList.vue'),
+    meta: { title: '股票列表' },
+  },
 ]
 
 const router = createRouter({
