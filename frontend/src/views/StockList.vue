@@ -33,10 +33,40 @@
         </el-button>
 
         <el-button @click="handleReset">重置</el-button>
+
+        <!-- 排序标签展示 -->
+        <div v-if="sortTags.length" class="sort-tags">
+          <el-tag
+            v-for="(tag, index) in sortTags"
+            :key="tag.field"
+            closable
+            size="small"
+            :type="index === 0 ? '' : 'info'"
+            @close="removeSort(tag.field)"
+            @click="toggleSortDirection(tag.field)"
+            style="cursor: pointer; margin-left: 8px"
+          >
+            {{ tag.label }} {{ tag.ascending ? '↑' : '↓' }}
+          </el-tag>
+          <el-button text type="danger" size="small" style="margin-left: 8px" @click="clearSort">
+            清除排序
+          </el-button>
+        </div>
+      </div>
+
+      <!-- 当前日期提示 -->
+      <div v-if="actualScanDate" class="date-hint">
+        <el-text type="info" size="small">数据日期：{{ actualScanDate }}</el-text>
       </div>
 
       <!-- 数据表格 -->
-      <el-table :data="tableData" stripe style="width: 100%" border>
+      <el-table
+        :data="tableData"
+        stripe
+        style="width: 100%"
+        border
+        @sort-change="handleSortChange"
+      >
         <el-table-column prop="stock_code" label="股票代码" width="110" />
         <el-table-column prop="stock_name" label="股票名称" width="120" />
         <el-table-column prop="data_date" label="数据日期" width="120" />
@@ -46,7 +76,14 @@
             <span v-else class="text-muted">--</span>
           </template>
         </el-table-column>
-        <el-table-column label="涨跌幅" width="100" align="right">
+        <el-table-column
+          prop="change_pct"
+          label="涨跌幅"
+          width="110"
+          align="right"
+          sortable="custom"
+          :sort-orders="['ascending', 'descending', null]"
+        >
           <template #default="{ row }">
             <span v-if="row.change_pct != null" :class="row.change_pct >= 0 ? 'price-up' : 'price-down'">
               {{ row.change_pct >= 0 ? '+' : '' }}{{ row.change_pct.toFixed(2) }}%
@@ -54,13 +91,27 @@
             <span v-else class="text-muted">--</span>
           </template>
         </el-table-column>
-        <el-table-column label="成交量" width="120" align="right">
+        <el-table-column
+          prop="volume"
+          label="成交量"
+          width="120"
+          align="right"
+          sortable="custom"
+          :sort-orders="['ascending', 'descending', null]"
+        >
           <template #default="{ row }">
             <span v-if="row.volume">{{ formatVolume(row.volume) }}</span>
             <span v-else class="text-muted">--</span>
           </template>
         </el-table-column>
-        <el-table-column label="换手率" width="100" align="right">
+        <el-table-column
+          prop="turnover"
+          label="换手率"
+          width="110"
+          align="right"
+          sortable="custom"
+          :sort-orders="['ascending', 'descending', null]"
+        >
           <template #default="{ row }">
             <span v-if="row.turnover != null">{{ row.turnover.toFixed(2) }}%</span>
             <span v-else class="text-muted">--</span>
@@ -92,7 +143,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { getStockList } from '@/api/stocks'
 
@@ -103,6 +154,31 @@ const tableData = ref([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(20)
+const actualScanDate = ref('')
+
+// 组合排序状态: [{field, ascending}]
+const sortList = ref([])
+
+const FIELD_LABELS = {
+  change_pct: '涨跌幅',
+  volume: '成交量',
+  turnover: '换手率',
+}
+
+const sortTags = computed(() =>
+  sortList.value.map(s => ({
+    field: s.field,
+    label: FIELD_LABELS[s.field] || s.field,
+    ascending: s.ascending,
+  }))
+)
+
+function buildSortParam() {
+  if (!sortList.value.length) return ''
+  return sortList.value
+    .map(s => (s.ascending ? '' : '-') + s.field)
+    .join(',')
+}
 
 async function fetchData() {
   loading.value = true
@@ -113,15 +189,57 @@ async function fetchData() {
     }
     if (keyword.value) params.keyword = keyword.value
     if (scanDate.value) params.scan_date = scanDate.value
+    const sortParam = buildSortParam()
+    if (sortParam) params.sort_by = sortParam
 
     const res = await getStockList(params)
     tableData.value = res.items || []
     total.value = res.total || 0
+    actualScanDate.value = res.scan_date || ''
   } catch (e) {
     console.error('获取股票列表失败:', e)
   } finally {
     loading.value = false
   }
+}
+
+function handleSortChange({ prop, order }) {
+  if (!prop) return
+  // 移除该字段已有的排序
+  const idx = sortList.value.findIndex(s => s.field === prop)
+  if (idx !== -1) sortList.value.splice(idx, 1)
+
+  if (order) {
+    // 追加到排序列表末尾（支持组合排序）
+    sortList.value.push({
+      field: prop,
+      ascending: order === 'ascending',
+    })
+  }
+
+  currentPage.value = 1
+  fetchData()
+}
+
+function toggleSortDirection(field) {
+  const item = sortList.value.find(s => s.field === field)
+  if (item) {
+    item.ascending = !item.ascending
+    currentPage.value = 1
+    fetchData()
+  }
+}
+
+function removeSort(field) {
+  sortList.value = sortList.value.filter(s => s.field !== field)
+  currentPage.value = 1
+  fetchData()
+}
+
+function clearSort() {
+  sortList.value = []
+  currentPage.value = 1
+  fetchData()
 }
 
 function handleSearch() {
@@ -132,6 +250,7 @@ function handleSearch() {
 function handleReset() {
   keyword.value = ''
   scanDate.value = ''
+  sortList.value = []
   currentPage.value = 1
   fetchData()
 }
@@ -169,6 +288,17 @@ onMounted(fetchData)
   margin-bottom: 16px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.sort-tags {
+  display: flex;
+  align-items: center;
+  margin-left: 12px;
+}
+
+.date-hint {
+  margin-bottom: 12px;
 }
 
 .price-up {
