@@ -82,14 +82,18 @@ class VolumeBreakoutStrategy(BaseStrategy):
         """
         在底部区域寻找放量涨停
         条件：
-        1. 前期下跌3个月以上，跌幅>30%
-        2. 某日放量涨停（涨幅>=9.5%，成交量>=前5日均量2倍）
+        1. 前期下跌2个月以上，跌幅>20%
+        2. 某日放量涨停（涨幅>=9.5%，成交量>=前5日均量的1.8倍）
         """
         n = len(df)
-        min_decline_days = settings.BOTTOM_DECLINE_MONTHS * 20  # 约60个交易日
+        min_decline_days = settings.BOTTOM_DECLINE_MONTHS * 20  # 约40个交易日
 
         # 从后往前寻找涨停日
-        for i in range(n - settings.PULLBACK_DAYS_MAX - 1, max(min_decline_days, 0), -1):
+        # 搜索范围：从最近 PULLBACK_DAYS_MIN 天前开始向前搜索（允许最近的涨停也被检测到）
+        search_start = n - settings.PULLBACK_DAYS_MIN - 1
+        search_end = max(min_decline_days, 0)
+
+        for i in range(search_start, search_end, -1):
             row = df.iloc[i]
             prev_row = df.iloc[i - 1]
 
@@ -100,7 +104,7 @@ class VolumeBreakoutStrategy(BaseStrategy):
             if change_pct < 0.095:
                 continue
 
-            # 检查放量（>=前5日均量的2倍）
+            # 检查放量（>=前5日均量的1.8倍）
             if i < 5:
                 continue
             avg_vol_5 = df.iloc[i - 5:i]["volume"].mean()
@@ -110,7 +114,7 @@ class VolumeBreakoutStrategy(BaseStrategy):
             if vol_ratio < settings.BREAKOUT_VOLUME_RATIO:
                 continue
 
-            # 检查前期是否下跌（向前看60天）
+            # 检查前期是否下跌（向前看min_decline_days天）
             lookback_start = max(0, i - min_decline_days)
             period_high = df.iloc[lookback_start:i]["high"].max()
             period_low = df.iloc[lookback_start:i]["low"].min()
@@ -140,6 +144,14 @@ class VolumeBreakoutStrategy(BaseStrategy):
                 else:
                     break
 
+            # 确保连板后有足够天数形成回调
+            end_idx = i + consecutive_limits - 1
+            days_since = n - 1 - end_idx
+            if days_since < settings.PULLBACK_DAYS_MIN:
+                continue
+            if days_since > settings.PULLBACK_DAYS_MAX + 5:
+                continue
+
             return {
                 "breakout_idx": i,
                 "breakout_date": df.iloc[i]["date"],
@@ -151,7 +163,7 @@ class VolumeBreakoutStrategy(BaseStrategy):
                 "change_pct": change_pct,
                 "consecutive_limits": consecutive_limits,
                 "pre_decline": decline,
-                "end_idx": i + consecutive_limits - 1,  # 连板结束位置
+                "end_idx": end_idx,  # 连板结束位置
             }
 
         return None

@@ -25,7 +25,6 @@
           value-format="YYYY-MM-DD"
           clearable
           style="width: 180px; margin-left: 12px"
-          @change="handleSearch"
         />
 
         <el-button type="primary" style="margin-left: 12px" @click="handleSearch">
@@ -59,91 +58,107 @@
         <el-text type="info" size="small">数据日期：{{ actualScanDate }}</el-text>
       </div>
 
-      <!-- 数据表格 -->
-      <el-table
-        :data="tableData"
-        stripe
-        style="width: 100%"
-        border
-        @sort-change="handleSortChange"
+      <!-- 未搜索时的提示 -->
+      <el-empty
+        v-if="!hasSearched"
+        description="请选择日期后点击查询按钮"
+        :image-size="120"
       >
-        <el-table-column prop="stock_code" label="股票代码" width="110" />
-        <el-table-column prop="stock_name" label="股票名称" width="120" />
-        <el-table-column prop="data_date" label="数据日期" width="120" />
-        <el-table-column label="最新价" width="100" align="right">
-          <template #default="{ row }">
-            <span v-if="row.latest_price">{{ row.latest_price.toFixed(2) }}</span>
-            <span v-else class="text-muted">--</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          prop="change_pct"
-          label="涨跌幅"
-          width="110"
-          align="right"
-          sortable="custom"
-          :sort-orders="['ascending', 'descending', null]"
-        >
-          <template #default="{ row }">
-            <span v-if="row.change_pct != null" :class="row.change_pct >= 0 ? 'price-up' : 'price-down'">
-              {{ row.change_pct >= 0 ? '+' : '' }}{{ row.change_pct.toFixed(2) }}%
-            </span>
-            <span v-else class="text-muted">--</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          prop="volume"
-          label="成交量"
-          width="120"
-          align="right"
-          sortable="custom"
-          :sort-orders="['ascending', 'descending', null]"
-        >
-          <template #default="{ row }">
-            <span v-if="row.volume">{{ formatVolume(row.volume) }}</span>
-            <span v-else class="text-muted">--</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          prop="turnover"
-          label="换手率"
-          width="110"
-          align="right"
-          sortable="custom"
-          :sort-orders="['ascending', 'descending', null]"
-        >
-          <template #default="{ row }">
-            <span v-if="row.turnover != null">{{ row.turnover.toFixed(2) }}%</span>
-            <span v-else class="text-muted">--</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button text type="primary" size="small" @click="$router.push(`/stock/${row.stock_code}`)">
-              K线
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+        <template #description>
+          <p style="color: #909399; font-size: 14px">请选择数据日期，点击「查询」按钮显示股票列表</p>
+        </template>
+      </el-empty>
 
-      <!-- 分页 -->
-      <el-pagination
-        v-if="total > 0"
-        class="pagination"
-        layout="total, sizes, prev, pager, next, jumper"
-        :total="total"
-        :page-size="pageSize"
-        :page-sizes="[20, 50, 100]"
-        :current-page="currentPage"
-        @current-change="handlePageChange"
-        @size-change="handleSizeChange"
-      />
+      <!-- 数据表格（仅搜索后显示） -->
+      <template v-if="hasSearched">
+        <el-table
+          :data="tableData"
+          stripe
+          style="width: 100%"
+          border
+          @sort-change="handleSortChange"
+        >
+          <el-table-column prop="stock_code" label="股票代码" width="110" />
+          <el-table-column prop="stock_name" label="股票名称" width="120" />
+          <el-table-column prop="data_date" label="数据日期" width="120" />
+          <el-table-column label="最新价" width="100" align="right">
+            <template #default="{ row }">
+              <span v-if="row.latest_price">{{ row.latest_price.toFixed(2) }}</span>
+              <span v-else class="text-muted">--</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="change_pct"
+            label="涨跌幅"
+            width="110"
+            align="right"
+            sortable="custom"
+            :sort-orders="['ascending', 'descending', null]"
+          >
+            <template #default="{ row }">
+              <span v-if="row.change_pct != null" :class="row.change_pct >= 0 ? 'price-up' : 'price-down'">
+                {{ row.change_pct >= 0 ? '+' : '' }}{{ row.change_pct.toFixed(2) }}%
+              </span>
+              <span v-else class="text-muted">--</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="volume"
+            label="成交量"
+            width="120"
+            align="right"
+            sortable="custom"
+            :sort-orders="['ascending', 'descending', null]"
+          >
+            <template #default="{ row }">
+              <span v-if="row.volume">{{ formatVolume(row.volume) }}</span>
+              <span v-else class="text-muted">--</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="turnover"
+            label="换手率"
+            width="110"
+            align="right"
+            sortable="custom"
+            :sort-orders="['ascending', 'descending', null]"
+          >
+            <template #default="{ row }">
+              <span v-if="row.turnover != null">{{ row.turnover.toFixed(2) }}%</span>
+              <span v-else class="text-muted">--</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right" align="center">
+            <template #default="{ row }">
+              <el-button text type="primary" size="small" @click="$router.push(`/stock/${row.stock_code}`)">
+                K线
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <!-- 分页 -->
+        <el-pagination
+          v-if="total > 0"
+          class="pagination"
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="total"
+          :page-size="pageSize"
+          :page-sizes="[20, 50, 100]"
+          :current-page="currentPage"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+        />
+
+        <!-- 搜索后无数据 -->
+        <el-empty v-if="hasSearched && tableData.length === 0 && !loading" description="该日期暂无数据" />
+      </template>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { getStockList } from '@/api/stocks'
 
@@ -155,6 +170,7 @@ const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(20)
 const actualScanDate = ref('')
+const hasSearched = ref(false)
 
 // 组合排序状态: [{field, ascending}]
 const sortList = ref([])
@@ -196,6 +212,7 @@ async function fetchData() {
     tableData.value = res.items || []
     total.value = res.total || 0
     actualScanDate.value = res.scan_date || ''
+    hasSearched.value = true
   } catch (e) {
     console.error('获取股票列表失败:', e)
   } finally {
@@ -252,7 +269,10 @@ function handleReset() {
   scanDate.value = ''
   sortList.value = []
   currentPage.value = 1
-  fetchData()
+  tableData.value = []
+  total.value = 0
+  actualScanDate.value = ''
+  hasSearched.value = false
 }
 
 function handlePageChange(page) {
@@ -271,8 +291,6 @@ function formatVolume(vol) {
   if (vol >= 1e4) return (vol / 1e4).toFixed(0) + '万'
   return vol.toString()
 }
-
-onMounted(fetchData)
 </script>
 
 <style scoped>

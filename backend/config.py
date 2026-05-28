@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     MIN_MARKET_CAP: float = 5e8       # 最低市值5亿
     MIN_TURNOVER: float = 0.5         # 最低换手率0.5%
 
+    # 数据同步参数
+    SYNC_ON_STARTUP: bool = True      # 启动时是否自动同步数据
+    KLINE_DAYS: int = 250             # 全量同步K线天数
+
     # 股票池过滤关键词（名称包含这些关键词的股票将被排除）
     STOCK_POOL_EXCLUDE: list = ["ST", "*ST", "退市", "退"]
 

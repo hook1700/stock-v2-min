@@ -37,9 +37,20 @@ def shutdown_scheduler():
 
 
 async def run_daily_analysis():
-    """每日15:30执行的分析任务"""
+    """每日定时执行的分析任务：先同步数据，再跑策略"""
+    from backend.services.data_sync_service import DataSyncService
     from backend.services.strategy_runner import StrategyRunner
 
+    # Step 1: 增量同步今日数据
+    logger.info("开始增量同步今日行情数据...")
+    try:
+        sync_service = DataSyncService()
+        sync_service.sync_incremental()
+    except Exception as e:
+        logger.error(f"数据同步失败: {e}", exc_info=True)
+        # 数据同步失败不阻止策略运行（可能用已有数据）
+
+    # Step 2: 执行选股策略
     logger.info("开始执行每日选股分析...")
     runner = StrategyRunner()
     result = await runner.run_all()

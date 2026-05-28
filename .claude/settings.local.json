@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(The strategies 'arent finding stocks because they have fundamental logic bugs, *)"
+    ]
+  }
+}

@@ -76,10 +76,13 @@ def compute_trend_strength(close: pd.Series, period: int = 20) -> float:
     return slope / mean_price * 100  # 百分比形式
 
 
-def is_bullish_ma_alignment(df: pd.DataFrame, ma_cols: list) -> bool:
+def is_bullish_ma_alignment(df: pd.DataFrame, ma_cols: list, tolerance: float = 0.005) -> bool:
     """
-    判断均线是否多头排列
+    判断均线是否多头排列（允许小幅容差）
     ma_cols: ["ma5", "ma10", "ma20", "ma60"] 从短到长
+    tolerance: 允许相邻均线之间的容差比例（默认0.5%），即短均线略低于长均线但差距在容差内也算通过
+
+    规则：至少3对相邻均线满足 短MA >= 长MA * (1 - tolerance)
     """
     if df.empty:
         return False
@@ -89,12 +92,20 @@ def is_bullish_ma_alignment(df: pd.DataFrame, ma_cols: list) -> bool:
         if col not in df.columns or pd.isna(latest[col]):
             return False
 
-    # 短均线 > 长均线
-    for i in range(len(ma_cols) - 1):
-        if latest[ma_cols[i]] <= latest[ma_cols[i + 1]]:
-            return False
+    # 统计满足条件的相邻对数
+    pairs_ok = 0
+    total_pairs = len(ma_cols) - 1
 
-    return True
+    for i in range(total_pairs):
+        short_ma = latest[ma_cols[i]]
+        long_ma = latest[ma_cols[i + 1]]
+        # 允许短均线略低于长均线（在容差范围内）
+        if short_ma >= long_ma * (1 - tolerance):
+            pairs_ok += 1
+
+    # 至少3对中有2对满足（即允许1对不满足），或全部满足
+    min_required = max(total_pairs - 1, 2)
+    return pairs_ok >= min_required
 
 
 def is_ma_trending_up(df: pd.DataFrame, ma_col: str, lookback: int = 5) -> bool:

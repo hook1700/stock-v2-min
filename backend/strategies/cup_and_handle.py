@@ -227,11 +227,12 @@ class CupAndHandleStrategy(BaseStrategy):
 
     def _is_breakout(self, df: pd.DataFrame, handle: dict) -> bool:
         """
-        检测最近5天是否有放量突破柄部高点
+        检测最近15天是否有放量突破柄部高点
         条件：收盘价>柄部高点，量比>=阈值
         """
-        # 检查最近5天是否有突破
-        for offset in range(min(5, len(df))):
+        # 检查最近15天是否有突破（放宽窗口，因为柄部可能持续较长时间）
+        check_window = min(15, len(df))
+        for offset in range(check_window):
             idx = -1 - offset
             row = df.iloc[idx]
 

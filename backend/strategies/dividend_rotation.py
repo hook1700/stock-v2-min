@@ -61,9 +61,18 @@ class DividendRotationStrategy(BaseStrategy):
         if fund is None:
             return None
 
-        # 条件1: 高股息率（>4%）
+        # 条件1: 高股息率（>3%）
+        # 注意：如果stock_fundamentals表未填充，dividend_yield会为0
+        # 此时跳过该条件，改用其他指标做初筛
         dividend_yield = fund.get("dividend_yield", 0)
-        if not dividend_yield or dividend_yield < settings.DIVIDEND_YIELD_MIN:
+        has_fundamental_data = dividend_yield > 0 or fund.get("pe", 0) > 0
+
+        if has_fundamental_data:
+            # 有基本面数据时，严格过滤
+            if dividend_yield < settings.DIVIDEND_YIELD_MIN:
+                return None
+        else:
+            # 无基本面数据时，跳过此策略（避免全部返回空）
             return None
 
         # 条件2: 低估值
@@ -71,17 +80,22 @@ class DividendRotationStrategy(BaseStrategy):
         pb = fund.get("pb", 0)
 
         # PE必须为正且合理（排除亏损股和过高PE）
-        if pe <= 0 or pe > 30:
+        if pe > 0 and pe > 30:
             return None
 
-        # PB不能过高
-        if pb <= 0 or pb > 3:
+        # PB不能过高（PE或PB为0时不过滤，可能是数据缺失）
+        if pb > 0 and pb > 3:
             return None
 
-        # 条件3: 财务健康检查（使用可用的指标）
+        # 条件3: 财务健康检查
         # 由于BaoStock接口限制，市值为0时跳过市值过滤（数据不可用不等于不合格）
         market_cap = fund.get("market_cap", 0)
         if market_cap > 0 and market_cap < settings.MIN_MARKET_CAP * 4:  # 高股息股通常大市值
+            return None
+
+        # 负债率检查（有数据时才检查）
+        debt_ratio = fund.get("debt_ratio", 0)
+        if debt_ratio > 0 and debt_ratio > settings.DEBT_RATIO_MAX:
             return None
 
         # 构建信号

@@ -21,6 +21,15 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info("正在启动股票选股策略系统...")
     init_db()
+
+    # 启动时检查并同步数据
+    try:
+        from backend.services.data_sync_service import DataSyncService
+        sync_service = DataSyncService()
+        sync_service.sync_on_startup()
+    except Exception as e:
+        logger.error(f"启动数据同步失败（不影响服务启动）: {e}", exc_info=True)
+
     start_scheduler()
     logger.info("系统启动完成")
     yield
