@@ -97,6 +97,7 @@ class RecommendationService:
                     volume_trend=signal.volume_trend,
                     relative_strength=signal.relative_strength,
                     pe_percentile=signal.pe_percentile,
+                    ma_signal=signal.ma_signal,
                     reasoning=signal.reasoning,
                 )
                 db.add(sector_record)
@@ -111,6 +112,7 @@ class RecommendationService:
                         sector_name=signal.sector_name,
                         stock_code=stock.stock_code,
                         stock_name=stock.stock_name,
+                        signal_type=stock.signal_type,
                         buy_price=stock.buy_price,
                         stop_loss_price=stock.stop_loss_price,
                         take_profit_price=stock.take_profit_price,

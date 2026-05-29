@@ -45,6 +45,7 @@ async def get_sector_rotation():
             volume_trend=sector.volume_trend,
             relative_strength=sector.relative_strength,
             pe_percentile=sector.pe_percentile,
+            ma_signal=sector.ma_signal or "HOLD",
             reasoning=sector.reasoning,
             recommended_stocks=picks_by_sector.get(sector.sector_code, []),
         )

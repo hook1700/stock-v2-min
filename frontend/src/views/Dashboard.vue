@@ -34,9 +34,14 @@
               class="sector-item"
             >
               <span class="sector-name">{{ sector.sector_name }}</span>
-              <el-tag type="success" size="small">
-                {{ sector.momentum_20d > 0 ? '+' : '' }}{{ sector.momentum_20d?.toFixed(1) }}%
-              </el-tag>
+              <div class="sector-tags">
+                <el-tag v-if="sector.ma_signal && sector.ma_signal !== 'HOLD'" :type="maTagType(sector.ma_signal)" size="small">
+                  {{ maTagLabel(sector.ma_signal) }}
+                </el-tag>
+                <el-tag type="success" size="small">
+                  {{ sector.momentum_20d > 0 ? '+' : '' }}{{ sector.momentum_20d?.toFixed(1) }}%
+                </el-tag>
+              </div>
             </div>
           </div>
           <el-empty v-else description="暂无数据" :image-size="60" />
@@ -58,9 +63,14 @@
               class="sector-item"
             >
               <span class="sector-name">{{ sector.sector_name }}</span>
-              <el-tag type="danger" size="small">
-                {{ sector.momentum_20d > 0 ? '+' : '' }}{{ sector.momentum_20d?.toFixed(1) }}%
-              </el-tag>
+              <div class="sector-tags">
+                <el-tag v-if="sector.ma_signal && sector.ma_signal !== 'HOLD'" :type="maTagType(sector.ma_signal)" size="small">
+                  {{ maTagLabel(sector.ma_signal) }}
+                </el-tag>
+                <el-tag type="danger" size="small">
+                  {{ sector.momentum_20d > 0 ? '+' : '' }}{{ sector.momentum_20d?.toFixed(1) }}%
+                </el-tag>
+              </div>
             </div>
           </div>
           <el-empty v-else description="暂无数据" :image-size="60" />
@@ -85,6 +95,16 @@ const strategies = computed(() => strategyStore.strategies)
 
 function goToStrategy(id) {
   router.push(`/strategy/${id}`)
+}
+
+function maTagLabel(signal) {
+  const map = { BUY_STRONG: '强买', BUY: '买入', WARN: '预警', SELL: '清仓' }
+  return map[signal] || ''
+}
+
+function maTagType(signal) {
+  const map = { BUY_STRONG: 'success', BUY: 'success', WARN: 'warning', SELL: 'danger' }
+  return map[signal] || 'info'
 }
 
 onMounted(() => {
@@ -138,6 +158,12 @@ onMounted(() => {
 
 .sector-item:last-child {
   border-bottom: none;
+}
+
+.sector-tags {
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }
 
 .sector-name {

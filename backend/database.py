@@ -1,5 +1,5 @@
 """SQLite数据库连接管理"""
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text as import_text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from backend.config import settings
 
@@ -36,6 +36,25 @@ def init_db():
         SectorStockPick, SchedulerLog
     )
     Base.metadata.create_all(bind=engine)
+
+    # 迁移：为已存在的表添加新字段（SQLite不支持IF NOT EXISTS列，需try）
+    _migrate_add_columns()
+
+
+def _migrate_add_columns():
+    """增量迁移：添加新版本所需的字段"""
+    migrations = [
+        "ALTER TABLE sector_analysis ADD COLUMN ma_signal VARCHAR(15) DEFAULT 'HOLD'",
+        "ALTER TABLE sector_stock_picks ADD COLUMN signal_type VARCHAR(20) DEFAULT 'SECTOR_BUY'",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(import_text(sql))
+                conn.commit()
+            except Exception:
+                # 字段已存在，忽略
+                conn.rollback()
 
 
 def get_db():

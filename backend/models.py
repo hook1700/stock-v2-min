@@ -88,6 +88,7 @@ class SectorAnalysis(Base):
     volume_trend = Column(String(15))                              # expanding/contracting
     relative_strength = Column(Float)                              # 相对强度
     pe_percentile = Column(Float)                                  # PE百分位
+    ma_signal = Column(String(15), default="HOLD")                 # BUY_STRONG/BUY/WARN/SELL/HOLD
     reasoning = Column(Text)                                       # 分析理由
     created_at = Column(DateTime, default=datetime.now)
 
@@ -107,6 +108,7 @@ class SectorStockPick(Base):
     sector_name = Column(String(30), nullable=False)
     stock_code = Column(String(10), nullable=False)
     stock_name = Column(String(20), nullable=False)
+    signal_type = Column(String(20), default="SECTOR_BUY")         # BOTH/VOLUME_BREAKOUT/SECTOR_BUY
     buy_price = Column(Float)                                      # 建议买入价
     stop_loss_price = Column(Float)                                # 止损价
     take_profit_price = Column(Float)                              # 止盈目标价

@@ -36,6 +36,7 @@ class SectorStockPickSchema(BaseModel):
     """板块推荐股票"""
     stock_code: str
     stock_name: str
+    signal_type: str = "SECTOR_BUY"   # BOTH/VOLUME_BREAKOUT/SECTOR_BUY
     buy_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
@@ -56,6 +57,7 @@ class SectorAnalysisSchema(BaseModel):
     volume_trend: Optional[str] = None
     relative_strength: Optional[float] = None
     pe_percentile: Optional[float] = None
+    ma_signal: str = "HOLD"           # BUY_STRONG/BUY/WARN/SELL/HOLD
     reasoning: Optional[str] = None
     recommended_stocks: list[SectorStockPickSchema] = []
 

@@ -25,7 +25,12 @@
           <el-card class="sector-card" shadow="hover">
             <div class="sector-header">
               <span class="sector-name">{{ sector.sector_name }}</span>
-              <el-tag type="success">机会</el-tag>
+              <div class="header-tags">
+                <el-tag :type="maSignalType(sector.ma_signal)" size="small">
+                  {{ maSignalLabel(sector.ma_signal) }}
+                </el-tag>
+                <el-tag type="success">机会</el-tag>
+              </div>
             </div>
 
             <div class="metrics">
@@ -60,6 +65,13 @@
                 <div class="stock-info">
                   <span class="stock-name">{{ stock.stock_name }}</span>
                   <span class="stock-code">{{ stock.stock_code }}</span>
+                  <el-tag
+                    :type="stockSignalType(stock.signal_type)"
+                    size="small"
+                    class="stock-signal-tag"
+                  >
+                    {{ stockSignalLabel(stock.signal_type) }}
+                  </el-tag>
                 </div>
                 <div class="stock-prices">
                   <span class="buy">买{{ stock.buy_price?.toFixed(2) }}</span>
@@ -87,7 +99,12 @@
           <el-card class="sector-card risk" shadow="hover">
             <div class="sector-header">
               <span class="sector-name">{{ sector.sector_name }}</span>
-              <el-tag type="danger">风险</el-tag>
+              <div class="header-tags">
+                <el-tag :type="maSignalType(sector.ma_signal)" size="small">
+                  {{ maSignalLabel(sector.ma_signal) }}
+                </el-tag>
+                <el-tag type="danger">风险</el-tag>
+              </div>
             </div>
             <div class="metrics">
               <div class="metric">
@@ -117,6 +134,50 @@ import { useSectorStore } from '@/stores/sector'
 
 const sectorStore = useSectorStore()
 const rotation = computed(() => sectorStore.rotation)
+
+// 均线信号标签
+function maSignalLabel(signal) {
+  const map = {
+    BUY_STRONG: '🚀 强势买入',
+    BUY: '📈 买入',
+    WARN: '⚠️ 预警',
+    SELL: '🔻 清仓',
+    HOLD: '⏸ 观望',
+  }
+  return map[signal] || '⏸ 观望'
+}
+
+// 均线信号颜色
+function maSignalType(signal) {
+  const map = {
+    BUY_STRONG: 'success',
+    BUY: 'success',
+    WARN: 'warning',
+    SELL: 'danger',
+    HOLD: 'info',
+  }
+  return map[signal] || 'info'
+}
+
+// 个股形态信号标签
+function stockSignalLabel(type) {
+  const map = {
+    BOTH: '洗盘+放量',
+    VOLUME_BREAKOUT: '放量突破',
+    SECTOR_BUY: '板块推荐',
+  }
+  return map[type] || '板块推荐'
+}
+
+// 个股形态信号颜色
+function stockSignalType(type) {
+  const map = {
+    BOTH: 'success',
+    VOLUME_BREAKOUT: 'warning',
+    SECTOR_BUY: '',
+  }
+  return map[type] || ''
+}
 
 onMounted(() => {
   sectorStore.fetchSectorRotation()
@@ -157,6 +218,12 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.header-tags {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .sector-name {
@@ -244,4 +311,8 @@ onMounted(() => {
 .stock-prices .buy { color: #409eff; }
 .stock-prices .stop { color: #f56c6c; }
 .stock-prices .target { color: #67c23a; }
+
+.stock-signal-tag {
+  margin-left: 4px;
+}
 </style>
