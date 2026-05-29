@@ -1,5 +1,6 @@
 """推荐结果持久化服务"""
 import logging
+import numpy as np
 from datetime import date, datetime
 from typing import Optional
 
@@ -13,6 +14,21 @@ from backend.models import (
 from backend.strategies.base import TradeSignal
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_numpy(value):
+    """将numpy类型转换为Python原生类型"""
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    elif isinstance(value, (np.floating,)):
+        return float(value)
+    elif isinstance(value, np.ndarray):
+        return value.tolist()
+    elif isinstance(value, dict):
+        return {k: _convert_numpy(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple)):
+        return [_convert_numpy(item) for item in value]
+    return value
 
 
 class RecommendationService:
@@ -37,14 +53,14 @@ class RecommendationService:
                     stock_code=signal.stock_code,
                     stock_name=signal.stock_name,
                     signal_type=signal.signal_type,
-                    confidence_score=signal.confidence_score,
-                    current_price=signal.current_price,
-                    buy_price=signal.buy_price,
-                    stop_loss_price=signal.stop_loss_price,
-                    take_profit_price=signal.take_profit_price,
+                    confidence_score=float(signal.confidence_score),
+                    current_price=float(signal.current_price),
+                    buy_price=float(signal.buy_price),
+                    stop_loss_price=float(signal.stop_loss_price),
+                    take_profit_price=float(signal.take_profit_price),
                     buy_reason=signal.buy_reason,
                     sell_condition=signal.sell_condition,
-                    extra_data=signal.extra_data,
+                    extra_data=_convert_numpy(signal.extra_data),
                 )
                 db.add(rec)
 
