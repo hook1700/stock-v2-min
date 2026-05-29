@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     DB_PATH: Path = Path(__file__).parent / "data" / "stock_v2.db"
     CACHE_DIR: Path = Path(__file__).parent / "data" / "cache"
 
-    # 定时任务配置
-    DAILY_RUN_HOUR: int = 21
-    DAILY_RUN_MINUTE: int = 30
+    # 定时任务配置（baostock每天17:30更新，定时任务17:45执行）
+    DAILY_RUN_HOUR: int = 17
+    DAILY_RUN_MINUTE: int = 45
     TIMEZONE: str = "Asia/Shanghai"
 
     # 策略1: 杯柄形态参数

@@ -1,4 +1,5 @@
 """FastAPI应用入口"""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -16,19 +17,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _async_startup_sync():
+    """异步执行启动时的数据库初始化检查（不拉取股票行情数据，留给定时任务处理）"""
+    try:
+        from backend.services.data_sync_service import DataSyncService
+        from backend.models import (
+            StockPool, StockDailyData, StockRecommendation,
+            SectorAnalysis, SectorStockPick, SchedulerLog
+        )
+        from backend.database import engine, Base
+
+        # 仅确保表结构存在
+        Base.metadata.create_all(bind=engine)
+        logger.info("数据库表结构检查完成（股票数据同步由定时任务17:45处理）")
+    except Exception as e:
+        logger.error(f"启动数据库检查失败（不影响服务运行）: {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info("正在启动股票选股策略系统...")
     init_db()
 
-    # 启动时检查并同步数据
-    try:
-        from backend.services.data_sync_service import DataSyncService
-        sync_service = DataSyncService()
-        sync_service.sync_on_startup()
-    except Exception as e:
-        logger.error(f"启动数据同步失败（不影响服务启动）: {e}", exc_info=True)
+    # 异步执行启动检查，不阻塞服务启动
+    asyncio.create_task(_async_startup_sync())
 
     start_scheduler()
     logger.info("系统启动完成")
