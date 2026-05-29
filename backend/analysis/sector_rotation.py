@@ -24,6 +24,7 @@ class SectorSignal:
     volume_trend: str = ""   # expanding / contracting
     relative_strength: float = 0.0
     pe_percentile: float = 0.0
+    ma_signal: str = "HOLD"  # BUY_STRONG / BUY / WARN / SELL / HOLD
     reasoning: str = ""
     recommended_stocks: list = field(default_factory=list)
 
@@ -147,6 +148,9 @@ class SectorRotationAnalyzer:
             sector_name, signal_type, scores, momentum_20d, momentum_5d
         )
 
+        # 计算板块均线信号
+        ma_signal = detect_signal(history)
+
         return SectorSignal(
             sector_code=sector_code,
             sector_name=sector_name,
@@ -157,6 +161,7 @@ class SectorRotationAnalyzer:
             volume_trend=volume_trend_str,
             relative_strength=round(relative_strength, 4),
             pe_percentile=round(pe_percentile, 4),
+            ma_signal=ma_signal,
             reasoning=reasoning,
         )
 
@@ -246,7 +251,7 @@ class SectorRotationAnalyzer:
         return np.clip(consecutive_up / 5.0, -1, 1)
 
     def _pick_sector_stocks(self, signal: SectorSignal):
-        """在机会板块中选择推荐股票"""
+        """在机会板块中选择推荐股票，结合量价形态策略"""
         from backend.strategies.base import TradeSignal
 
         constituents = self.data_service.get_sector_constituents(signal.sector_code)
@@ -261,16 +266,32 @@ class SectorRotationAnalyzer:
                 if df is None or len(df) < 20:
                     continue
 
-                score = self._score_stock_in_sector(df, code)
-                if score > 0:
-                    candidates.append((code, score, df))
+                # 基础评分
+                base_score = self._score_stock_in_sector(df, code)
+
+                # 量价形态判定
+                vol_signal = detect_consolidation_and_surge(df)
+
+                # 根据量价形态调整评分和信号类型
+                if vol_signal == "BOTH":
+                    final_score = base_score + 0.5  # 最优形态加分最多
+                    stock_signal_type = "BOTH"
+                elif vol_signal == "VOLUME_BREAKOUT":
+                    final_score = base_score + 0.3  # 放量突破加分
+                    stock_signal_type = "VOLUME_BREAKOUT"
+                else:
+                    final_score = base_score
+                    stock_signal_type = "SECTOR_BUY"  # 仅来自板块信号
+
+                if final_score > 0:
+                    candidates.append((code, final_score, df, stock_signal_type))
             except Exception:
                 continue
 
         # 取前3只
         candidates.sort(key=lambda x: x[1], reverse=True)
 
-        for code, score, df in candidates[:3]:
+        for code, score, df, stock_signal_type in candidates[:3]:
             latest = df.iloc[-1]
             stock_name = self.data_service.get_stock_name(code)
 
@@ -280,16 +301,24 @@ class SectorRotationAnalyzer:
             stop_loss = ma20 * 0.95  # 20日线下方5%
             take_profit = buy_price * 1.15  # 目标15%
 
+            # 根据形态类型生成不同的买入理由
+            if stock_signal_type == "BOTH":
+                reason = f"板块({signal.sector_name})机会 + 横盘洗盘放量拉升形态，评分{score:.2f}"
+            elif stock_signal_type == "VOLUME_BREAKOUT":
+                reason = f"板块({signal.sector_name})机会 + 放量突破，评分{score:.2f}"
+            else:
+                reason = f"板块轮动机会（{signal.sector_name}），技术面评分{score:.2f}"
+
             trade_signal = TradeSignal(
                 stock_code=code,
                 stock_name=stock_name,
-                signal_type="BUY",
+                signal_type=stock_signal_type,
                 confidence_score=score,
                 current_price=latest["close"],
                 buy_price=round(buy_price, 2),
                 stop_loss_price=round(stop_loss, 2),
                 take_profit_price=round(take_profit, 2),
-                buy_reason=f"板块轮动机会（{signal.sector_name}），技术面评分{score:.2f}",
+                buy_reason=reason,
                 sell_condition=f"止损{stop_loss:.2f}元，目标{take_profit:.2f}元",
             )
             signal.recommended_stocks.append(trade_signal)
@@ -360,3 +389,172 @@ class SectorRotationAnalyzer:
             parts.append("估值偏高需注意")
 
         return "；".join(parts)
+
+
+def detect_signal(history: pd.DataFrame) -> str:
+    """
+    板块均线信号策略（策略五）
+    基于 MA5/MA15/MA50 三均线交叉判定板块趋势信号。
+
+    参数:
+        history: 板块历史K线 DataFrame，需包含 'close' 列，按日期升序排列
+
+    返回:
+        信号字符串: BUY_STRONG / BUY / WARN / SELL / HOLD
+
+    信号优先级: BUY_STRONG > BUY > WARN > SELL > HOLD
+    """
+    if history is None or len(history) < settings.SECTOR_MA_LONG + 1:
+        return "HOLD"
+
+    close_col = "close" if "close" in history.columns else "收盘"
+    if close_col not in history.columns:
+        return "HOLD"
+
+    closes = history[close_col].values
+
+    ma_short = settings.SECTOR_MA_SHORT   # MA5
+    ma_mid = settings.SECTOR_MA_MID       # MA15
+    ma_long = settings.SECTOR_MA_LONG     # MA50
+
+    # 计算均线值（当日和前一日）
+    ma5_today = closes[-ma_short:].mean()
+    ma5_yesterday = closes[-(ma_short + 1):-1].mean()
+
+    ma15_today = closes[-ma_mid:].mean()
+    ma15_yesterday = closes[-(ma_mid + 1):-1].mean()
+
+    ma50_today = closes[-ma_long:].mean()
+    ma50_yesterday = closes[-(ma_long + 1):-1].mean()
+
+    current_close = closes[-1]
+
+    # 判定上穿/下穿
+    # 上穿：前一日 short <= long，当日 short > long
+    ma5_cross_up_ma15 = (ma5_yesterday <= ma15_yesterday) and (ma5_today > ma15_today)
+    ma5_cross_up_ma50 = (ma5_yesterday <= ma50_yesterday) and (ma5_today > ma50_today)
+    ma5_cross_down_ma15 = (ma5_yesterday >= ma15_yesterday) and (ma5_today < ma15_today)
+    ma5_cross_down_ma50 = (ma5_yesterday >= ma50_yesterday) and (ma5_today < ma50_today)
+
+    # 按优先级判定信号
+    # 1. BUY_STRONG: MA5 同日上穿 MA15 且同日上穿 MA50
+    if ma5_cross_up_ma15 and ma5_cross_up_ma50:
+        return "BUY_STRONG"
+
+    # 2. BUY: MA5 上穿 MA15（金叉）且收盘价 > MA50
+    if ma5_cross_up_ma15 and current_close > ma50_today:
+        return "BUY"
+
+    # 3. WARN: MA5 下穿 MA15（死叉）
+    if ma5_cross_down_ma15:
+        return "WARN"
+
+    # 4. SELL: MA5 下穿 MA50
+    if ma5_cross_down_ma50:
+        return "SELL"
+
+    # 5. HOLD: 无以上信号
+    return "HOLD"
+
+
+def detect_consolidation_and_surge(
+    df: pd.DataFrame,
+    consolidation_days: int = None,
+    consolidation_amplitude: float = None,
+    surge_days: int = None,
+    volume_ratio: float = None,
+    min_surge_pct: float = None,
+) -> Optional[str]:
+    """
+    个股量价形态策略（策略六）
+    识别「横盘洗盘 → 放量拉升」经典形态。
+
+    参数:
+        df: 个股日K线 DataFrame，需包含 'close'和'volume' 列，按日期升序排列
+        consolidation_days: 横盘观察天数（默认从配置读取）
+        consolidation_amplitude: 横盘最大振幅百分比（默认从配置读取）
+        surge_days: 放量观察天数（默认从配置读取）
+        volume_ratio: 放量倍数阈值（默认从配置读取）
+        min_surge_pct: 最低累计涨幅百分比（默认从配置读取）
+
+    返回:
+        signal_type: "BOTH" / "VOLUME_BREAKOUT" / None
+        - BOTH: 横盘洗盘 + 放量拉升都满足（最优形态）
+        - VOLUME_BREAKOUT: 仅满足放量突破条件
+        - None: 未触发任何形态
+    """
+    # 使用配置默认值
+    consolidation_days = consolidation_days or settings.CONSOLIDATION_DAYS
+    consolidation_amplitude = consolidation_amplitude or settings.CONSOLIDATION_AMPLITUDE
+    surge_days = surge_days or settings.SURGE_DAYS
+    volume_ratio = volume_ratio or settings.VOLUME_SURGE_RATIO
+    min_surge_pct = min_surge_pct or settings.MIN_SURGE_PCT
+
+    # 数据长度检查
+    min_required = consolidation_days + surge_days
+    if df is None or len(df) < min_required:
+        return None
+
+    close_col = "close" if "close" in df.columns else "收盘"
+    vol_col = "volume" if "volume" in df.columns else "成交量"
+
+    if close_col not in df.columns or vol_col not in df.columns:
+        return None
+
+    closes = df[close_col].values
+    volumes = df[vol_col].values
+
+    # ====== 放量拉升判定 ======
+    # 最近 surge_days 日
+    surge_closes = closes[-surge_days:]
+    surge_volumes = volumes[-surge_days:]
+
+    # 前 consolidation_days 日（早于放量期）
+    pre_period_end = len(closes) - surge_days
+    pre_period_start = pre_period_end - consolidation_days
+
+    if pre_period_start < 0:
+        return None
+
+    pre_closes = closes[pre_period_start:pre_period_end]
+    pre_volumes = volumes[pre_period_start:pre_period_end]
+
+    # 放量条件：近 surge_days 日均量 > 前 consolidation_days 日均量 × volume_ratio
+    avg_surge_vol = surge_volumes.mean()
+    avg_pre_vol = pre_volumes.mean()
+
+    if avg_pre_vol <= 0:
+        return None
+
+    volume_breakout = avg_surge_vol > avg_pre_vol * volume_ratio
+
+    # 涨幅条件：近 surge_days 日累计涨幅 > min_surge_pct%
+    # 累计涨幅 = (最后一日收盘 - 放量期前一日收盘) / 放量期前一日收盘 * 100%
+    pre_close = closes[-(surge_days + 1)]  # 放量期前一日收盘价
+    if pre_close <= 0:
+        return None
+
+    surge_pct = (surge_closes[-1] - pre_close) / pre_close * 100
+    price_surge = surge_pct > min_surge_pct
+
+    is_volume_surge = volume_breakout and price_surge
+
+    # ====== 横盘洗盘判定 ======
+    # 观察前 consolidation_days 日收盘价振幅
+    # 振幅 = (最高收盘 - 最低收盘) / 最低收盘 * 100%
+    max_close = pre_closes.max()
+    min_close = pre_closes.min()
+
+    if min_close <= 0:
+        return None
+
+    amplitude = (max_close - min_close) / min_close * 100
+    is_consolidation = amplitude < consolidation_amplitude
+
+    # ====== 输出信号类型 ======
+    if is_consolidation and is_volume_surge:
+        return "BOTH"
+    elif is_volume_surge:
+        return "VOLUME_BREAKOUT"
+    else:
+        return None

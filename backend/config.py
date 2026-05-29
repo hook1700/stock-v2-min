@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     SECTOR_TOP_N: int = 5             # 机会板块取前N个
     SECTOR_BOTTOM_N: int = 5          # 风险板块取后N个
 
+    # 策略五：板块均线信号参数
+    SECTOR_MA_SHORT: int = 5          # 短期均线周期
+    SECTOR_MA_MID: int = 15           # 中期均线周期
+    SECTOR_MA_LONG: int = 50          # 长期均线周期
+
+    # 策略六：个股量价形态参数
+    CONSOLIDATION_DAYS: int = 20      # 横盘观察天数
+    CONSOLIDATION_AMPLITUDE: float = 15.0  # 横盘最大振幅百分比
+    SURGE_DAYS: int = 3               # 放量观察天数
+    VOLUME_SURGE_RATIO: float = 1.5   # 放量倍数阈值
+    MIN_SURGE_PCT: float = 3.0        # 最低累计涨幅百分比
+
     # 选股通用参数
     TOP_PICKS: int = 3                # 每个策略推荐股票数
     MIN_MARKET_CAP: float = 5e8       # 最低市值5亿
